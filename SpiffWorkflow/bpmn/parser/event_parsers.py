@@ -7,7 +7,8 @@ from ..specs.events import (TimerEventDefinition, MessageEventDefinition,
                             ErrorEventDefinition, EscalationEventDefinition,SignalEventDefinition,
                             CancelEventDefinition, CycleTimerEventDefinition,
                             TerminateEventDefinition, NoneEventDefinition,
-                            StartEvent, EndEvent, BoundaryEvent, IntermediateCatchEvent, IntermediateThrowEvent)
+                            StartEvent, EndEvent, BoundaryEvent, IntermediateCatchEvent, IntermediateThrowEvent,
+                            ConditionalEventDefinition)
 
 
 CAMUNDA_MODEL_NS = 'http://camunda.org/schema/1.0/bpmn'
@@ -88,6 +89,14 @@ class EventDefinitionParser(TaskParser):
         except:
             raise ValidationException("Unknown Time Specification", node=self.node, filename=self.filename)
 
+    def parse_conditional_event(self, conditionalEvent):
+        try:
+            conditionExpression = first(self.xpath('.//bpmn:condition'))
+            if conditionExpression is not None:
+                return ConditionalEventDefinition(self.node.get('name'), conditionExpression.text)
+        except:
+            raise ValidationException("Unknown Conditional Specification", node=self.node, filename=self.filename)
+
 
 class StartEventParser(EventDefinitionParser):
     """Parses a Start Event, and connects it to the internal spec.start task.  Support Message, Signal, and Timer events."""
@@ -97,6 +106,7 @@ class StartEventParser(EventDefinitionParser):
         messageEvent = first(self.xpath('.//bpmn:messageEventDefinition'))
         signalEvent = first(self.xpath('.//bpmn:signalEventDefinition'))
         timerEvent = first(self.xpath('.//bpmn:timerEventDefinition'))
+        conditionalEvent = first(self.xpath('.//bpmn:conditionalEventDefinition'))
 
         if messageEvent is not None:
             event_definition = self.parse_message_event(messageEvent)
@@ -104,6 +114,8 @@ class StartEventParser(EventDefinitionParser):
             event_definition = self.parse_signal_event(signalEvent)
         elif timerEvent is not None:
             event_definition = self.parse_timer_event(timerEvent)
+        elif conditionalEvent is not None:
+            event_definition = self.parse_conditional_event(conditionalEvent)
         else:
             event_definition = NoneEventDefinition()
 

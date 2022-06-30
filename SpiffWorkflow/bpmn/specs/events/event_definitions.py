@@ -369,3 +369,36 @@ class CycleTimerEventDefinition(EventDefinition):
         retdict['cycle_definition'] = self.cycle_definition
         return retdict
 
+
+class ConditionalEventDefinition(EventDefinition):
+    """
+    The ConditionalEventDefinition is the implementation of event definition used for
+    Catching Conditional Events.
+    """
+
+    def __init__(self, label, expression):
+        """
+        Constructor.
+
+        :param label: The label of the event. Used for the description.
+
+        :param expression: This is a condition expression. This is
+        passed to the Script Engine and must evaluate.
+        """
+        super(ConditionalEventDefinition, self).__init__()
+        self.label = label
+        self.expression = expression
+
+    def has_fired(self, my_task):
+        """
+        The Event is considered to have fired if the evaluated expression is True
+        """
+        condition = my_task.workflow.script_engine.evaluate(my_task,
+                                                            self.expression)
+        return condition
+
+    def serialize(self):
+        retdict = super(ConditionalEventDefinition, self).serialize()
+        retdict['label'] = self.label
+        retdict['expression'] = self.expression
+        return retdict
