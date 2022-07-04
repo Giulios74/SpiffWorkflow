@@ -8,6 +8,7 @@ from .dictionary import DictionaryConverter
 from ..specs.events import SignalEventDefinition, MessageEventDefinition, NoneEventDefinition
 from ..specs.events import TimerEventDefinition, CycleTimerEventDefinition, TerminateEventDefinition
 from ..specs.events import ErrorEventDefinition, EscalationEventDefinition, CancelEventDefinition
+from ..specs.events import ConditionalEventDefinition
 from ..specs.events.event_definitions import NamedEventDefinition
 
 from ..specs.BpmnSpecMixin import BpmnSpecMixin, SequenceFlow
@@ -65,7 +66,7 @@ class BpmnTaskSpecConverter(DictionaryConverter):
 
         event_definitions = [ NoneEventDefinition, CancelEventDefinition, TerminateEventDefinition,
             SignalEventDefinition, MessageEventDefinition, ErrorEventDefinition, EscalationEventDefinition,
-            TimerEventDefinition, CycleTimerEventDefinition ]
+            TimerEventDefinition, CycleTimerEventDefinition, ConditionalEventDefinition]
 
         for event_definition in event_definitions:
             self.register(
@@ -227,6 +228,9 @@ class BpmnTaskSpecConverter(DictionaryConverter):
             dct['error_code'] = event_definition.error_code
         if isinstance(event_definition, EscalationEventDefinition):
             dct['escalation_code'] = event_definition.escalation_code
+        if isinstance(event_definition, ConditionalEventDefinition):
+            dct['label'] = event_definition.label
+            dct['expression'] = event_definition.expression
 
         return dct
 
