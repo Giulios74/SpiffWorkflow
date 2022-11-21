@@ -202,13 +202,13 @@ class MessageEventDefinition(NamedEventDefinition):
             result_var = event_definition.result_var
         my_task.internal_data[event_definition.name] = {
             "result_var": result_var,
-            "payload": event_definition.payload
+            "payload": my_task.payload or event_definition.payload
         }
         super(MessageEventDefinition, self).catch(my_task, event_definition)
 
     def throw(self, my_task):
         # We need to evaluate the message payload in the context of this task
-        result = my_task.workflow.script_engine.evaluate(my_task, self.payload)
+        result = my_task.workflow.script_engine.evaluate(my_task, my_task.payload or self.payload)
         # We can't update our own payload, because if this task is reached again
         # we have to evaluate it again so we have to create a new event
         event = MessageEventDefinition(self.name, payload=result, result_var=self.result_var)
@@ -393,6 +393,7 @@ class ConditionalEventDefinition(EventDefinition):
         """
         The Event is considered to have fired if the evaluated expression is True
         """
+        print("CONDITION.........", my_task.payload, my_task)
         condition = my_task.workflow.script_engine.evaluate(my_task,
                                                             self.expression)
         return condition

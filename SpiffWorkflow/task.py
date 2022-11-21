@@ -256,6 +256,7 @@ class Task(object,  metaclass=DeprecatedMetaTask):
         self.mi_collect_data = {}
         if parent is not None:
             self.parent._child_added_notify(self)
+        self.payload = None
 
     def __repr__(self):
         return '<Task object (%s) in state %s at %s>' % (
@@ -816,3 +817,11 @@ class Task(object,  metaclass=DeprecatedMetaTask):
         Prints the subtree as a string for debugging.
         """
         print(self.get_dump())
+
+    def message(self, payload):
+        """
+        Send a message to the event task
+        """
+        self.payload = payload
+        if hasattr(self.task_spec, 'event_definition'):
+            self.task_spec.catch(self, self.task_spec.event_definition)
