@@ -2,12 +2,11 @@
 
 import sys
 import unittest
-import re
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
-from SpiffWorkflow.specs import WorkflowSpec, Simple, Join
+from SpiffWorkflow.specs.WorkflowSpec import WorkflowSpec
 from SpiffWorkflow.specs.SubWorkflow import SubWorkflow
 from SpiffWorkflow.serializer.prettyxml import XmlSerializer
 from SpiffWorkflow.task import TaskState
@@ -39,6 +38,8 @@ class TaskSpecTest(unittest.TestCase):
     def do_next_unique_task(self, name):
         # This method asserts that there is only one ready task! The specified
         # one - and then completes it
+        for task in self.workflow.get_tasks(TaskState.WAITING):
+            task.task_spec._update(task)
         ready_tasks = self.workflow.get_tasks(TaskState.READY)
         self.assertEqual(1, len(ready_tasks))
         task = ready_tasks[0]
@@ -59,12 +60,13 @@ class TaskSpecTest(unittest.TestCase):
         self.load_workflow_spec('data', 'block_to_subworkflow.xml')
         self.do_next_unique_task('Start')
         self.do_next_unique_task('first')
-        self.do_next_unique_task('sub_workflow_1')
-        # Inner:
+
+        # Inner.  The subworkflow task will complete automatically after the subwokflow completes
         self.do_next_unique_task('Start')
         self.do_next_unique_task('first')
         self.do_next_unique_task('last')
         self.do_next_unique_task('End')
+
         # Back to outer:
         self.do_next_unique_task('last')
         self.do_next_unique_task('End')
@@ -73,7 +75,7 @@ class TaskSpecTest(unittest.TestCase):
         self.load_workflow_spec('data', 'subworkflow_to_block.xml')
         self.do_next_unique_task('Start')
         self.do_next_unique_task('first')
-        self.do_next_unique_task('sub_workflow_1')
+
         # Inner:
         self.do_next_unique_task('Start')
         self.do_next_unique_task('first')
@@ -87,8 +89,9 @@ class TaskSpecTest(unittest.TestCase):
         self.load_workflow_spec('control-flow', 'subworkflow_to_join.xml')
         self.do_next_unique_task('Start')
         self.do_next_unique_task('first')
-        self.do_next_named_step('second', ['sub_workflow_1'])
-        self.do_next_unique_task('sub_workflow_1')
+        # The subworkflow task now sets its child tasks to READY and waits
+        self.do_next_named_step('second', ['Start'])
+
         # Inner:
         self.do_next_unique_task('Start')
         self.do_next_unique_task('first')
@@ -103,8 +106,8 @@ class TaskSpecTest(unittest.TestCase):
         self.load_workflow_spec('control-flow', 'subworkflow_to_join.xml')
         self.do_next_unique_task('Start')
         self.do_next_unique_task('first')
-        self.do_next_named_step('second', ['sub_workflow_1'])
-        self.do_next_unique_task('sub_workflow_1')
+        self.do_next_named_step('second', ['Start'])
+
         # Inner:
         self.do_next_unique_task('Start')
         self.do_next_unique_task('first')

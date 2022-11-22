@@ -18,11 +18,8 @@
 # 02110-1301  USA
 from collections import deque
 
-import logging
 from ...task import TaskState
 from .UnstructuredJoin import UnstructuredJoin
-
-LOG = logging.getLogger(__name__)
 
 
 class InclusiveGateway(UnstructuredJoin):
@@ -64,6 +61,10 @@ class InclusiveGateway(UnstructuredJoin):
     In case all conditions evaluate to false and a default flow has not been
     specified, the Inclusive Gateway throws an exception.
     """
+
+    @property
+    def spec_type(self):
+        return 'Inclusive Gateway'
 
     def _check_threshold_unstructured(self, my_task, force=False):
 

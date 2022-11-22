@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 import unittest
 
-from SpiffWorkflow import TaskState
+from SpiffWorkflow.task import TaskState
 from SpiffWorkflow.bpmn.PythonScriptEngine import PythonScriptEngine
 from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
-from SpiffWorkflow.exceptions import WorkflowTaskExecException
+from SpiffWorkflow.bpmn.exceptions import WorkflowTaskExecException
 from tests.SpiffWorkflow.bpmn.BpmnWorkflowTestCase import BpmnWorkflowTestCase
 
 __author__ = 'McDonald, danfunk'
@@ -18,7 +18,7 @@ class CustomBpmnScriptEngine(PythonScriptEngine):
      scripts directory available for execution. """
     def __init__(self):
         augment_methods = {'custom_function': my_custom_function}
-        super().__init__(scriptingAdditions=augment_methods)
+        super().__init__(scripting_additions=augment_methods)
 
 
 class CustomInlineScriptTest(BpmnWorkflowTestCase):

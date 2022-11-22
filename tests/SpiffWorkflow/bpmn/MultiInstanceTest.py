@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 
-from asyncio import subprocess
 import sys
 import os
 import unittest
@@ -40,10 +39,6 @@ class MultiInstanceTest(BpmnWorkflowTestCase):
 
         self.workflow.do_engine_steps()
         self.assertTrue(self.workflow.is_completed())
-
-    def testNav(self):
-        nav = self.workflow.get_flat_nav_list()
-        print(nav)
 
 def suite():
     return unittest.TestLoader().loadTestsFromTestCase(MultiInstanceTest)

@@ -19,7 +19,7 @@
 from ...exceptions import WorkflowException
 
 from .BpmnSpecMixin import BpmnSpecMixin
-from ...specs import TaskSpec
+from ...specs.base import TaskSpec
 from ...specs.ExclusiveChoice import ExclusiveChoice
 
 
@@ -34,7 +34,7 @@ class ExclusiveGateway(ExclusiveChoice, BpmnSpecMixin):
         Checks whether all required attributes are set. Throws an exception
         if an error was detected.
         """
-        # This has been overidden to allow a single default flow out (without a
+        # This has been overridden to allow a single default flow out (without a
         # condition) - useful for the converging type
         TaskSpec.test(self)
 #        if len(self.cond_task_specs) < 1:
@@ -48,6 +48,10 @@ class ExclusiveGateway(ExclusiveChoice, BpmnSpecMixin):
                 raise WorkflowException(self, msg)
             if condition is None:
                 continue
+
+    @property
+    def spec_type(self):
+        return 'Exclusive Gateway'
 
     def serialize(self, serializer):
         return serializer.serialize_exclusive_gateway(self)

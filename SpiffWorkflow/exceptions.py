@@ -15,9 +15,6 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
-import re
-
-from .util import levenshtein
 
 
 class WorkflowException(Exception):
@@ -34,56 +31,9 @@ class WorkflowException(Exception):
         :param error: a human readable error message
         :type error: string
         """
-        Exception.__init__(self, '%s: %s' % (sender.name, error))
+        Exception.__init__(self, str(error))
         # Points to the TaskSpec that generated the exception.
         self.sender = sender
-
-
-class WorkflowTaskExecException(WorkflowException):
-    """
-    Exception during execution of task "payload". For example:
-
-    * ScriptTask during execution of embedded script,
-    * ServiceTask during external service call.
-    """
-
-    def __init__(self, task, error_msg, exception=None, line_number=0, error_line=""):
-        """
-        Exception initialization.
-
-        :param task: the task that threw the exception
-        :type task: Task
-        :param exception: a human readable error message
-        :type exception: Exception
-
-        """
-
-        self.offset = 0
-        self.line_number = line_number
-        self.task = task
-        self.exception = exception
-        self.error_line = error_line
-        # If encountered in a sub-workflow, this traces back up the stack
-        # so we can tell how we got to this paticular task, no matter how
-        # deeply nested in sub-workflows it is.  Takes the form of:
-        # task-description (file-name)
-        self.task_trace = self.get_task_trace(task)
-
-        if isinstance(exception, SyntaxError):
-            # Prefer line number from syntax error if available.
-            self.line_number = exception.lineno
-            self.offset = exception.offset
-        elif isinstance(exception, NameError):
-            def_match = re.match("name '(.+)' is not defined", str(exception))
-            if def_match:
-                bad_variable = re.match("name '(.+)' is not defined", str(exception)).group(1)
-                most_similar = levenshtein.most_similar(bad_variable, task.data.keys(), 3)
-                error_msg = f'something you are referencing does not exist: ' \
-                            f'"{exception}".'
-                error_msg += f' Did you mean \'{most_similar}\'?'
-            else:
-                error_msg = str(exception)
-        WorkflowException.__init__(self, task.task_spec, error_msg)
 
     @staticmethod
     def get_task_trace(task):
@@ -94,6 +44,32 @@ class WorkflowTaskExecException(WorkflowException):
             workflow = workflow.outer_workflow
             task_trace.append(f"{workflow.spec.task_specs[caller].description} ({workflow.spec.file})")
         return task_trace
+
+class WorkflowTaskException(WorkflowException):
+    """WorkflowException that provides task_trace information."""
+
+    def __init__(self, task, error_msg, exception=None):
+        """
+        Exception initialization.
+
+        :param task: the task that threw the exception
+        :type task: Task
+        :param error_msg: a human readable error message
+        :type error_msg: str
+        :param exception: an exception to wrap, if any
+        :type exception: Exception
+        """
+
+        self.exception = exception
+        self.task = task
+
+        # If encountered in a sub-workflow, this traces back up the stack
+        # so we can tell how we got to this paticular task, no matter how
+        # deeply nested in sub-workflows it is.  Takes the form of:
+        # task-description (file-name)
+        self.task_trace = self.get_task_trace(task)
+
+        super().__init__(task.task_spec, error_msg)
 
 
 class StorageException(Exception):

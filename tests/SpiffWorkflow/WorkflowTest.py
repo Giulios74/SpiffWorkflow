@@ -2,14 +2,14 @@
 
 import sys
 import unittest
-import re
 import os
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from SpiffWorkflow import Workflow
-from SpiffWorkflow.specs import *
-from SpiffWorkflow.operators import *
+from SpiffWorkflow.workflow import Workflow
+from SpiffWorkflow.specs.Cancel import Cancel
+from SpiffWorkflow.specs.Simple import Simple
+from SpiffWorkflow.specs.WorkflowSpec import WorkflowSpec
 from SpiffWorkflow.task import TaskState
 from SpiffWorkflow.serializer.prettyxml import XmlSerializer
 

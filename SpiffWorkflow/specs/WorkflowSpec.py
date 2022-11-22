@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
 
-
-from builtins import hex
-from builtins import object
 # Copyright (C) 2007 Samuel Abels
 #
 # This library is free software; you can redistribute it and/or
@@ -19,11 +16,8 @@ from builtins import object
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
-import logging
 
-from ..specs import StartTask
-
-LOG = logging.getLogger(__name__)
+from ..specs.StartTask import StartTask
 
 
 class WorkflowSpec(object):
@@ -88,7 +82,7 @@ class WorkflowSpec(object):
         :returns: empty list if valid, a list of errors if not
         """
         results = []
-        from ..specs import Join
+        from ..specs.Join import Join
 
         def recursive_find_loop(task, history):
             current = history[:]
@@ -115,10 +109,10 @@ class WorkflowSpec(object):
             # Check for disconnected tasks
             if not task.inputs and task.name not in ['Start', 'Root']:
                 if task.outputs:
-                    results.append("Task '%s' is disconnected (no inputs)" %
-                                   task.name)
+                    results.append(f"Task '{task.name}' is disconnected (no inputs)")
                 else:
-                    LOG.debug("Task '%s' is not being used" % task.name)
+                    results.append(f"Task '{task.name}' is not being used")
+
 
         return results
 

@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-import copy
-import warnings
-from builtins import str
-from builtins import hex
-from builtins import object
+
 # Copyright (C) 2007 Samuel Abels
 #
 # This library is free software; you can redistribute it and/or
@@ -20,15 +16,20 @@ from builtins import object
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
-from .exceptions import WorkflowException
+
+import copy
 import logging
 import time
+import warnings
 from uuid import uuid4
-from enum import IntFlag
 
 from .util.deep_merge import DeepMerge
+from .exceptions import WorkflowException
 
-LOG = logging.getLogger(__name__)
+logger = logging.getLogger('spiff')
+metrics = logging.getLogger('spiff.metrics')
+data_log = logging.getLogger('spiff.data')
+
 
 def updateDotDict(dct,dotted_path,value):
     parts = dotted_path.split(".")
@@ -44,7 +45,7 @@ def updateDotDict(dct,dotted_path,value):
     return root
 
 
-class TaskState(IntFlag):
+class TaskState:
     """
 
     The following states may exist:
@@ -167,7 +168,6 @@ class Task(object,  metaclass=DeprecatedMetaTask):
             self.path = [current]
             self.count = 1
 
-
         def __iter__(self):
             return self
 
@@ -244,12 +244,9 @@ class Task(object,  metaclass=DeprecatedMetaTask):
         self.children = []
         self._state = state
         self.triggered = False
-        self.state_history = [state]
-        self.log = []
         self.task_spec = task_spec
-        self.id = uuid4() #UUID(int=random.getrandbits(128),version=4)
+        self.id = uuid4()
         self.thread_id = self.__class__.thread_id_pool
-        self.last_state_change = time.time()
         self.data = {}
         self.terminate_current_loop = False
         self.internal_data = {}
@@ -258,11 +255,53 @@ class Task(object,  metaclass=DeprecatedMetaTask):
             self.parent._child_added_notify(self)
         self.payload = None
 
+        # TODO: get rid of this stuff
+        self.last_state_change = time.time()
+        self.state_history = [state]
+
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, value):
+        if value < self._state:
+            raise WorkflowException(
+                self.task_spec,
+                'state went from %s to %s!' % (self.get_state_name(), TaskStateNames[value])
+            )
+        self._set_state(value)
+
+    def _set_state(self, value):
+        """Using the setter method will raise an error on a "backwards" state change.
+        Call this method directly to force the state change.
+        """
+        if value != self.state:
+            logger.info(f'State change to {TaskStateNames[value]}', extra=self.log_info())
+            self.last_state_change = time.time()
+            self.state_history.append(value)
+            self._state = value
+        else:
+            logger.debug(f'State set to {TaskStateNames[value]}', extra=self.log_info())
+
     def __repr__(self):
         return '<Task object (%s) in state %s at %s>' % (
             self.task_spec.name,
             self.get_state_name(),
             hex(id(self)))
+
+    def log_info(self, dct=None):
+        extra = dct or {}
+        extra.update({
+            'workflow': self.workflow.spec.name,
+            'task_spec': self.task_spec.name,
+            'task_name': self.task_spec.description,
+            'task_id': self.id,
+            'task_type': self.task_spec.spec_type,
+            'data': self.data if logger.level < 20 else None,
+            'internal_data': self.internal_data if logger.level <= 10 else None,
+        })
+        return extra
 
     def update_data_var(self, fieldid, value):
         model = {}
@@ -277,6 +316,7 @@ class Task(object,  metaclass=DeprecatedMetaTask):
         and MultiInstance tasks will be updated correctly.
         """
         self.data = DeepMerge.merge(self.data, data)
+        data_log.info('Data update', extra=self.log_info())
 
     def task_info(self):
         """
@@ -324,32 +364,18 @@ class Task(object,  metaclass=DeprecatedMetaTask):
         the inputs - otherwise our child process never gets marked as
         'READY'
         """
-        from .bpmn.specs.UnstructuredJoin import UnstructuredJoin
-        from .bpmn.specs.SubWorkflowTask import SubWorkflowTask
 
-        if (self.state != TaskState.COMPLETED and self.state != TaskState.READY) and \
-                not (isinstance(self.task_spec,UnstructuredJoin)):
+        if not self.task_spec.task_should_set_children_future(self):
             return
 
-        if isinstance(self.task_spec,SubWorkflowTask):
-            self.workflow.delete_subprocess(self)
-            self.children = [] # if we have a call activity,
-                               # force reset of children.
+        self.task_spec.task_will_set_children_future(self)
 
-        if isinstance(self.task_spec, UnstructuredJoin):
-            # go find all of the gateways with the same name as this one,
-            # drop children and set state to WAITING
-            for t in list(self.workflow.task_tree):
-                if t.task_spec.name == self.task_spec.name and \
-                        t.state == TaskState.COMPLETED:
-                    t._set_state(TaskState.WAITING)
         # now we set this one to execute
 
         self._set_state(TaskState.MAYBE)
         self._sync_children(self.task_spec.outputs)
         for child in self.children:
             child.set_children_future()
-
 
     def find_children_by_name(self,name):
         """
@@ -375,39 +401,6 @@ class Task(object,  metaclass=DeprecatedMetaTask):
         self.set_children_future()  # this method actually fixes the problem
         self._set_state(TaskState.FUTURE)
         self.task_spec._update(self)
-
-
-    def _getstate(self):
-        return self._state
-
-    def _setstate(self, value, force=False):
-        """
-        Setting force to True allows for changing a state after it
-        COMPLETED. This would otherwise be invalid.
-        """
-        if self._state == value:
-            return
-        if value < self._state and not force:
-            raise WorkflowException(self.task_spec,
-                                    'state went from %s to %s!' % (
-                                        self.get_state_name(),
-                                        TaskStateNames[value]))
-        if __debug__:
-            old = self.get_state_name()
-        self._state = value
-        if __debug__:
-            self.log.append("Moving '%s' from %s to %s" % (
-                self.get_name(),
-                old, self.get_state_name()))
-        self.state_history.append(value)
-        LOG.debug("Moving '%s' (spec=%s) from %s to %s" % (
-            self.get_name(),
-            self.task_spec.name, old, self.get_state_name()))
-
-    def _delstate(self):
-        del self._state
-
-    state = property(_getstate, _setstate, _delstate, "State property.")
 
     def __iter__(self):
         return Task.Iterator(self)
@@ -452,16 +445,6 @@ class Task(object,  metaclass=DeprecatedMetaTask):
                 child._drop_children()
         for task in drop:
             self.children.remove(task)
-
-    def _set_state(self, state, force=True):
-        """
-        Setting force to True allows for changing a state after it
-        COMPLETED. This would otherwise be invalid.
-        """
-        orig_state = self.state
-        self._setstate(state, True)
-        if state != orig_state:
-            self.last_state_change = time.time()
 
     def _has_state(self, state):
         """
@@ -538,49 +521,44 @@ class Task(object,  metaclass=DeprecatedMetaTask):
         :type  state: integer
         :param state: The bitmask of states for the new children.
         """
-        LOG.debug("Updating children for %s" % self.get_name())
         if task_specs is None:
             raise ValueError('"task_specs" argument is None')
-        add = task_specs[:]
+        new_children = task_specs[:]
 
         # If a child task_spec is also an ancestor, we are looping back,
         # replace those specs with a loopReset task.
         root_task = self._get_root()
-        for index, task_spec in enumerate(add):
+        for index, task_spec in enumerate(new_children):
             ancestor_task = self._find_ancestor(task_spec)
             if ancestor_task and ancestor_task != root_task:
                 destination = ancestor_task
                 new_spec = self.workflow.get_reset_task_spec(destination)
                 new_spec.outputs = []
                 new_spec.inputs = task_spec.inputs
-                add[index] = new_spec
+                new_children[index] = new_spec
 
         # Create a list of all children that are no longer needed.
-        remove = []
+        unneeded_children = []
         for child in self.children:
             # Triggered tasks are never removed.
             if child.triggered:
                 continue
 
-            # Check whether the task needs to be removed.
-            if child.task_spec in add:
-                add.remove(child.task_spec)
+            # If the task already exists, remove it from to-be-added
+            if child.task_spec in new_children:
+                new_children.remove(child.task_spec)
+                # We should set the state here but that breaks everything
                 continue
 
-            # Non-predicted tasks must not be removed, so they HAVE to be in
-            # the given task spec list.
+            # Definite tasks must not be removed, so they HAVE to be in the given task spec list.
             if child._is_definite():
-                raise WorkflowException(self.task_spec,
-                                        'removal of non-predicted child %s' %
-                                        repr(child))
-            remove.append(child)
-
-
+                raise WorkflowException(self.task_spec, f'removal of non-predicted child {child}')
+            unneeded_children.append(child)
 
         # Remove and add the children accordingly.
-        for child in remove:
+        for child in unneeded_children:
             self.children.remove(child)
-        for task_spec in add:
+        for task_spec in new_children:
             self._add_child(task_spec, state)
 
     def _set_likely_task(self, task_specs):
@@ -593,7 +571,6 @@ class Task(object,  metaclass=DeprecatedMetaTask):
                 if child._is_definite():
                     continue
                 child._set_state(TaskState.LIKELY)
-                return
 
     def _is_descendant_of(self, parent):
         """
@@ -737,14 +714,12 @@ class Task(object,  metaclass=DeprecatedMetaTask):
         Defines the given attribute/value pairs.
         """
         self.data.update(kwargs)
+        data_log.info('Set data', extra=self.log_info())
 
     def _inherit_data(self):
         """
         Inherits the data from the parent.
         """
-        LOG.debug("'%s' inheriting data from '%s'" % (self.get_name(),
-                                                      self.parent.get_name()),
-                  extra=dict(data=self.parent.data))
         self.set_data(**self.parent.data)
 
     def get_data(self, name, default=None):
@@ -784,7 +759,14 @@ class Task(object,  metaclass=DeprecatedMetaTask):
         # A sane model would have success and failure states and instead we return
         # a boolean, with no systematic way of dealing with failures.  This is just
         # crazy!
-        return self.task_spec._on_complete(self)
+        start = time.time()
+        retval = self.task_spec._on_complete(self)
+        extra = self.log_info({
+            'action': 'Complete',
+            'elapsed': time.time() - start
+        })
+        metrics.debug('', extra=extra)
+        return retval
 
     def trigger(self, *args):
         """

@@ -14,8 +14,9 @@ try:
     from util import track_workflow
 except ImportError as e:
     from tests.SpiffWorkflow.util import track_workflow
-from SpiffWorkflow import Workflow
-from SpiffWorkflow.specs import Join, WorkflowSpec
+from SpiffWorkflow.workflow import Workflow
+from SpiffWorkflow.specs.Join import Join
+from SpiffWorkflow.specs.WorkflowSpec import WorkflowSpec
 from SpiffWorkflow.serializer.prettyxml import XmlSerializer
 
 serializer = XmlSerializer()
@@ -93,7 +94,7 @@ class WorkflowSpecTest(unittest.TestCase):
 
     def testValidate(self):
         """
-        Tests that we can detect when two wait taks are waiting on each
+        Tests that we can detect when two wait tasks are waiting on each
         other.
         """
         task1 = Join(self.wf_spec, 'First')

@@ -3,7 +3,6 @@
 from builtins import str
 import sys
 import unittest
-import re
 import os
 dirname = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(dirname, '..', '..', '..'))
@@ -11,7 +10,7 @@ sys.path.insert(0, os.path.join(dirname, '..', '..', '..'))
 import uuid
 from SpiffWorkflow.serializer.dict import DictionarySerializer
 from .baseTest import SerializerTest
-from SpiffWorkflow import Workflow
+from SpiffWorkflow.workflow import Workflow
 
 
 class DictionarySerializerTest(SerializerTest):

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import datetime
 import unittest
 import time
 
@@ -21,8 +22,11 @@ class CustomScriptEngine(PythonScriptEngine):
     It will execute python code read in from the bpmn.  It will also make any scripts in the
      scripts directory available for execution. """
     def __init__(self):
-        augment_methods = {'custom_function': my_custom_function}
-        super().__init__(scriptingAdditions=augment_methods)
+        augment_methods = {
+            'custom_function': my_custom_function,
+            'timedelta': datetime.timedelta,
+        }
+        super().__init__(scripting_additions=augment_methods)
 
 
 
@@ -50,11 +54,11 @@ class TimerDurationTest(BpmnWorkflowTestCase):
 
         # See comments in timer cycle test for more context
         counter = 0
-        for loopcount in range(10):
+        for loopcount in range(5):
             if save_restore:
                 self.save_restore()
                 self.workflow.script_engine = CustomScriptEngine()
-            time.sleep(0.1)
+            time.sleep(0.01)
             self.workflow.refresh_waiting_tasks()
             self.workflow.do_engine_steps()
 

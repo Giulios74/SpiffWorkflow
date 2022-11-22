@@ -18,12 +18,19 @@
 # 02110-1301  USA
 
 import glob
+import os
 
 from lxml import etree
+from lxml.etree import DocumentInvalid
 
-from SpiffWorkflow.bpmn.specs.BpmnProcessSpec import BpmnProcessSpec
+from SpiffWorkflow.bpmn.specs.events.event_definitions import NoneEventDefinition
+
 from .ValidationException import ValidationException
-from ..specs.events import StartEvent, EndEvent, BoundaryEvent, IntermediateCatchEvent, IntermediateThrowEvent
+from ..specs.BpmnProcessSpec import BpmnProcessSpec
+from ..specs.events.EndEvent import EndEvent
+from ..specs.events.StartEvent import StartEvent
+from ..specs.events.IntermediateEvent import BoundaryEvent, IntermediateCatchEvent, IntermediateThrowEvent
+from ..specs.events.IntermediateEvent import SendTask, ReceiveTask
 from ..specs.SubWorkflowTask import CallActivity, SubWorkflowTask, TransactionSubprocess
 from ..specs.ExclusiveGateway import ExclusiveGateway
 from ..specs.InclusiveGateway import InclusiveGateway
@@ -31,16 +38,41 @@ from ..specs.ManualTask import ManualTask
 from ..specs.NoneTask import NoneTask
 from ..specs.ParallelGateway import ParallelGateway
 from ..specs.ScriptTask import ScriptTask
+from ..specs.ServiceTask import ServiceTask
 from ..specs.UserTask import UserTask
 from .ProcessParser import ProcessParser
-from .util import full_tag, xpath_eval
+from .node_parser import DEFAULT_NSMAP
+from .util import full_tag, xpath_eval, first
 from .task_parsers import (UserTaskParser, NoneTaskParser, ManualTaskParser,
                            ExclusiveGatewayParser, ParallelGatewayParser, InclusiveGatewayParser,
-                           CallActivityParser, TransactionSubprocessParser,
-                           ScriptTaskParser, SubWorkflowParser)
+                           CallActivityParser, ScriptTaskParser, SubWorkflowParser,
+                           ServiceTaskParser)
 from .event_parsers import (StartEventParser, EndEventParser, BoundaryEventParser,
-                           IntermediateCatchEventParser, IntermediateThrowEventParser)
+                           IntermediateCatchEventParser, IntermediateThrowEventParser,
+                           SendTaskParser, ReceiveTaskParser)
 
+
+XSD_PATH = os.path.join(os.path.dirname(__file__), 'schema', 'BPMN20.xsd')
+
+class BpmnValidator:
+
+    def __init__(self, xsd_path=XSD_PATH, imports=None):
+        schema = etree.parse(open(xsd_path))
+        if imports is not None:
+            for ns, fn in imports.items():
+                elem = etree.Element(
+                    '{http://www.w3.org/2001/XMLSchema}import',
+                    namespace=ns,
+                    schemaLocation=fn
+                )
+                schema.getroot().insert(0, elem)
+        self.validator = etree.XMLSchema(schema)
+
+    def validate(self, bpmn, filename=None):
+        try:
+            self.validator.assertValid(bpmn)
+        except DocumentInvalid as di:
+            raise DocumentInvalid(str(di) + "file: " + filename)
 
 class BpmnParser(object):
     """
@@ -64,25 +96,32 @@ class BpmnParser(object):
         full_tag('parallelGateway'): (ParallelGatewayParser, ParallelGateway),
         full_tag('inclusiveGateway'): (InclusiveGatewayParser, InclusiveGateway),
         full_tag('callActivity'): (CallActivityParser, CallActivity),
-        full_tag('transaction'): (TransactionSubprocessParser, TransactionSubprocess),
+        full_tag('transaction'): (SubWorkflowParser, TransactionSubprocess),
         full_tag('scriptTask'): (ScriptTaskParser, ScriptTask),
-        full_tag('intermediateCatchEvent'): (IntermediateCatchEventParser,
-                                             IntermediateCatchEvent),
-        full_tag('intermediateThrowEvent'): (IntermediateThrowEventParser,
-                                             IntermediateThrowEvent),
+        full_tag('serviceTask'): (ServiceTaskParser, ServiceTask),
+        full_tag('intermediateCatchEvent'): (IntermediateCatchEventParser, IntermediateCatchEvent),
+        full_tag('intermediateThrowEvent'): (IntermediateThrowEventParser, IntermediateThrowEvent),
         full_tag('boundaryEvent'): (BoundaryEventParser, BoundaryEvent),
+        full_tag('receiveTask'): (ReceiveTaskParser, ReceiveTask),
+        full_tag('sendTask'): (SendTaskParser, SendTask),
     }
 
     OVERRIDE_PARSER_CLASSES = {}
 
     PROCESS_PARSER_CLASS = ProcessParser
 
-    def __init__(self):
+    def __init__(self, namespaces=None, validator=None):
         """
         Constructor.
         """
+        self.namespaces = namespaces or DEFAULT_NSMAP
+        self.validator = validator
         self.process_parsers = {}
         self.process_parsers_by_name = {}
+        self.collaborations = {}
+        self.process_dependencies = set()
+        self.messages = {}
+        self.correlations = {}
 
     def _get_parser_class(self, tag):
         if tag in self.OVERRIDE_PARSER_CLASSES:
@@ -137,34 +176,82 @@ class BpmnParser(object):
           file
         :param filename: Optionally, provide the source filename.
         """
-        xpath = xpath_eval(bpmn)
-        # do a check on our bpmn to ensure that no id appears twice
-        # this *should* be taken care of by our modeler - so this test
-        # should never fail.
-        ids = [x for x in xpath('.//bpmn:*[@id]')]
-        foundids = {}
-        for node in ids:
-            id = node.get('id')
-            if foundids.get(id,None) is not None:
+        if self.validator:
+            self.validator.validate(bpmn, filename)
+
+        self._add_processes(bpmn, filename)
+        self._add_collaborations(bpmn)
+        self._add_messages(bpmn)
+        self._add_correlations(bpmn)
+
+    def _add_processes(self, bpmn, filename=None):
+        for process in bpmn.xpath('.//bpmn:process', namespaces=self.namespaces):
+            self._find_dependencies(process)
+            self.create_parser(process, filename)
+
+    def _add_collaborations(self, bpmn):
+        collaboration = first(bpmn.xpath('.//bpmn:collaboration', namespaces=self.namespaces))
+        if collaboration is not None:
+            collaboration_xpath = xpath_eval(collaboration)
+            name = collaboration.get('id')
+            self.collaborations[name] = [ participant.get('processRef') for participant in collaboration_xpath('.//bpmn:participant') ]
+
+    def _add_messages(self, bpmn):
+        for message in bpmn.xpath('.//bpmn:message', namespaces=self.namespaces):
+            if message.attrib.get("id") is None:
                 raise ValidationException(
-                    'The bpmn document should have no repeating ids but (%s) repeats'%id,
-                    node=node,
-                    filename=filename)
-            else:
-                foundids[id] = 1
+                    "Message identifier is missing from bpmn xml"
+                )
+            self.messages[message.attrib.get("id")] = message.attrib.get("name")
 
-        processes = xpath('.//bpmn:process')
-        for process in processes:
-            self.create_parser(process, xpath, filename)
+    def _add_correlations(self, bpmn):
+        for correlation in bpmn.xpath('.//bpmn:correlationProperty', namespaces=self.namespaces):
+            correlation_identifier = correlation.attrib.get("id")
+            if correlation_identifier is None:
+                raise ValidationException(
+                    "Correlation identifier is missing from bpmn xml"
+                )
+            correlation_property_retrieval_expressions = correlation.xpath(
+                "//bpmn:correlationPropertyRetrievalExpression", namespaces = self.namespaces)
+            if not correlation_property_retrieval_expressions:
+                raise ValidationException(
+                    f"Correlation is missing correlation property retrieval expressions: {correlation_identifier}"
+                )
+            retrieval_expressions = []
+            for cpre in correlation_property_retrieval_expressions:
+                message_model_identifier = cpre.attrib.get("messageRef")
+                if message_model_identifier is None:
+                    raise ValidationException(
+                        f"Message identifier is missing from correlation property: {correlation_identifier}"
+                    )
+                children = cpre.getchildren()
+                expression = children[0].text if len(children) > 0 else None
+                retrieval_expressions.append({"messageRef": message_model_identifier,
+                                             "expression": expression})
+            self.correlations[correlation_identifier] = {
+                "name": correlation.attrib.get("name"),
+                "retrieval_expressions": retrieval_expressions
+            }
 
-    def create_parser(self, node, doc_xpath, filename=None, lane=None):
-        parser = self.PROCESS_PARSER_CLASS(self, node, filename=filename, doc_xpath=doc_xpath, lane=lane)
+    def _find_dependencies(self, process):
+        """Locate all calls to external BPMN, and store their ids in our list of dependencies"""
+        for call_activity in process.xpath('.//bpmn:callActivity', namespaces=self.namespaces):
+            self.process_dependencies.add(call_activity.get('calledElement'))
+
+    def create_parser(self, node, filename=None, lane=None):
+        parser = self.PROCESS_PARSER_CLASS(self, node, self.namespaces, filename=filename, lane=lane)
         if parser.get_id() in self.process_parsers:
             raise ValidationException('Duplicate process ID', node=node, filename=filename)
         if parser.get_name() in self.process_parsers_by_name:
             raise ValidationException('Duplicate process name', node=node, filename=filename)
         self.process_parsers[parser.get_id()] = parser
         self.process_parsers_by_name[parser.get_name()] = parser
+
+    def get_dependencies(self):
+        return self.process_dependencies
+
+    def get_process_dependencies(self):
+        return self.process_dependencies
 
     def get_spec(self, process_id_or_name):
         """
@@ -180,7 +267,16 @@ class BpmnParser(object):
                 f"{', '.join(self.get_process_ids())}?")
         return parser.get_spec()
 
-    def get_process_specs(self):
+    def get_subprocess_specs(self, name, specs=None):
+        used = specs or {}
+        wf_spec = self.get_spec(name)
+        for task_spec in wf_spec.task_specs.values():
+            if isinstance(task_spec, SubWorkflowTask) and task_spec.spec not in used:
+                used[task_spec.spec] = self.get_spec(task_spec.spec)
+                self.get_subprocess_specs(task_spec.spec, used)
+        return used
+
+    def find_all_specs(self):
         # This is a little convoluted, but we might add more processes as we generate
         # the dictionary if something refers to another subprocess that we haven't seen.
         processes = dict((id, self.get_spec(id)) for id in self.get_process_ids())
@@ -189,16 +285,20 @@ class BpmnParser(object):
                 processes[process_id] = self.get_spec(process_id)
         return processes
 
-    def get_top_level_spec(self, name, entry_points, parallel=True):
+    def get_collaboration(self, name):
+        self.find_all_specs()
         spec = BpmnProcessSpec(name)
-        current = spec.start
-        for process in entry_points:
-            task = SubWorkflowTask(spec, process, process)
-            current.connect(task)
-            if parallel:
-                task.connect(spec.end)
-            else:
-                current = task
-        if not parallel:
-            current.connect(spec.end)
-        return spec
+        subprocesses = {}
+        start = StartEvent(spec, 'Start Collaboration', NoneEventDefinition())
+        spec.start.connect(start)
+        end = EndEvent(spec, 'End Collaboration', NoneEventDefinition())
+        end.connect(spec.end)
+        for process in self.collaborations[name]:
+            process_parser = self.get_process_parser(process)
+            if process_parser and process_parser.process_executable:
+                participant = CallActivity(spec, process, process)
+                start.connect(participant)
+                participant.connect(end)
+                subprocesses[process] = self.get_spec(process)
+                subprocesses.update(self.get_subprocess_specs(process))
+        return spec, subprocesses

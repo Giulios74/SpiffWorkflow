@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 
-from builtins import str
-from SpiffWorkflow.specs import *
-from SpiffWorkflow.operators import *
+from SpiffWorkflow.specs.ExclusiveChoice import ExclusiveChoice
+from SpiffWorkflow.specs.Join import Join
+from SpiffWorkflow.specs.MultiChoice import MultiChoice
+from SpiffWorkflow.specs.MultiInstance import MultiInstance
+from SpiffWorkflow.specs.Simple import Simple
+from SpiffWorkflow.specs.WorkflowSpec import WorkflowSpec
+from SpiffWorkflow.operators import Attrib, Equal, NotEqual
 
 
 class TestWorkflowSpec(WorkflowSpec):

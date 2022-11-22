@@ -17,14 +17,8 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
 
-import sys
 import datetime
-import logging
-import datetime
-
-from builtins import object
-
-LOG = logging.getLogger(__name__)
+from copy import deepcopy
 
 
 class EventDefinition(object):
@@ -40,11 +34,18 @@ class EventDefinition(object):
     Default catch behavior is to set the event to fired
     """
 
+    # Format to use for specifying dates for time based events
+    TIME_FORMAT = '%Y-%m-%d %H:%M:%S.%f'
+
     def __init__(self):
         # Ideally I'd mke these parameters, but I don't want to them to be parameters
         # for any subclasses (as they are based on event type, not user choice) and
         # I don't want to write a separate deserializer for every every type.
         self.internal, self.external = True, True
+
+    @property
+    def event_type(self):
+        return f'{self.__class__.__module__}.{self.__class__.__name__}'
 
     def has_fired(self, my_task):
         return my_task._get_internal_data('event_fired', False)
@@ -62,7 +63,7 @@ class EventDefinition(object):
     def reset(self, my_task):
         my_task._set_internal_data(event_fired=False)
 
-    def _throw(self, event, workflow, outer_workflow):
+    def _throw(self, event, workflow, outer_workflow, correlations=None):
         # This method exists because usually we just want to send the event in our
         # own task spec, but we can't do that for message events.
         # We also don't have a more sophisticated method for addressing events to
@@ -70,8 +71,8 @@ class EventDefinition(object):
         # between processes and subprocesses.
         if self.internal:
             workflow.catch(event)
-        if self.external and workflow != outer_workflow:
-            outer_workflow.catch(event)
+        if self.external:
+            outer_workflow.catch(event, correlations)
 
     def __eq__(self, other):
         return self.__class__.__name__ == other.__class__.__name__
@@ -124,6 +125,11 @@ class CancelEventDefinition(EventDefinition):
         super(CancelEventDefinition, self).__init__()
         self.internal = False
 
+    @property
+    def event_type(self):
+        return 'Cancel'
+
+
 class ErrorEventDefinition(NamedEventDefinition):
     """
     Error events can occur only in subprocesses and as subprocess boundary events.  They're
@@ -134,6 +140,10 @@ class ErrorEventDefinition(NamedEventDefinition):
         super(ErrorEventDefinition, self).__init__(name)
         self.error_code = error_code
         self.internal = False
+
+    @property
+    def event_type(self):
+        return 'Error'
 
     def __eq__(self, other):
         return self.__class__.__name__ == other.__class__.__name__ and self.error_code in [ None, other.error_code ]
@@ -159,6 +169,10 @@ class EscalationEventDefinition(NamedEventDefinition):
         super(EscalationEventDefinition, self).__init__(name)
         self.escalation_code = escalation_code
 
+    @property
+    def event_type(self):
+        return 'Escalation'
+
     def __eq__(self, other):
         return self.__class__.__name__ == other.__class__.__name__ and self.escalation_code in [ None, other.escalation_code ]
 
@@ -168,61 +182,62 @@ class EscalationEventDefinition(NamedEventDefinition):
         return retdict
 
 
+class CorrelationProperty:
+    """Rules for generating a correlation key when a message is sent or received."""
+
+    def __init__(self, name, expression, correlation_keys):
+        self.name = name                            # This is the property name
+        self.expression = expression                # This is how it's generated
+        self.correlation_keys = correlation_keys    # These are the keys it's used by
+
+
 class MessageEventDefinition(NamedEventDefinition):
-    """
-    Message Events have both a name and a payload.
-    """
+    """The default message event."""
 
-    # It is not entirely clear how the payload is supposed to be handled, so I have
-    # deviated from what the earlier code did as little as possible, but I believe
-    # this should be revisited: for one thing, we're relying on some Camunda-sepcific
-    # properties.
+    def __init__(self, name, correlation_properties=None):
+        super().__init__(name)
+        self.correlation_properties = correlation_properties or []
+        self.payload = None
+        self.internal = False
 
-    def __init__(self, name, payload=None, result_var=None):
+    @property
+    def event_type(self):
+        return 'Message'
 
-        super(MessageEventDefinition, self).__init__(name)
-        self.payload = payload
-        self.result_var = result_var
-
-        # The BPMN spec says that Messages should not be used within a process; however
-        # we're doing this wrong so I am putting this here as a reminder that it should be
-        # fixed, but commenting it out.
-
-        #self.internal = False
-
-    def catch(self, my_task, event_definition):
-
-        # It seems very stupid to me that the sender of the message should define the
-        # name of the variable the payload is saved in (the receiver ought to decide
-        # what to do with it); however, Camunda puts the field on the sender, not the
-        # receiver.
-        if event_definition.result_var is None:
-            result_var = f'{my_task.task_spec.name}_Response'
-        else:
-            result_var = event_definition.result_var
-        my_task.internal_data[event_definition.name] = {
-            "result_var": result_var,
-            "payload": my_task.payload or event_definition.payload
-        }
+    def catch(self, my_task, event_definition = None):
+        self.update_internal_data(my_task, event_definition)
         super(MessageEventDefinition, self).catch(my_task, event_definition)
 
     def throw(self, my_task):
-        # We need to evaluate the message payload in the context of this task
-        result = my_task.workflow.script_engine.evaluate(my_task, my_task.payload or self.payload)
         # We can't update our own payload, because if this task is reached again
         # we have to evaluate it again so we have to create a new event
-        event = MessageEventDefinition(self.name, payload=result, result_var=self.result_var)
-        self._throw(event, my_task.workflow, my_task.workflow.outer_workflow)
+        event = MessageEventDefinition(self.name, self.correlation_properties)
+        # Generating a payload unfortunately needs to be handled using custom extensions
+        # However, there needs to be something to apply the correlations to in the
+        # standard case and this is line with the way Spiff works otherwise
+        event.payload = deepcopy(my_task.data)
+        correlations = self.get_correlations(my_task.workflow.script_engine, event.payload)
+        my_task.workflow.correlations.update(correlations)
+        self._throw(event, my_task.workflow, my_task.workflow.outer_workflow, correlations)
 
-    def reset(self, my_task):
-        my_task.internal_data.pop(self.name, None)
-        super(MessageEventDefinition, self).reset(my_task)
+    def update_internal_data(self, my_task, event_definition):
+        my_task.internal_data[event_definition.name] = event_definition.payload
 
-    def serialize(self):
-        retdict = super(MessageEventDefinition, self).serialize()
-        retdict['payload'] = self.payload
-        retdict['result_var'] = self.result_var
-        return retdict
+    def update_task_data(self, my_task):
+        # I've added this method so that different message implementations can handle
+        # copying their message data into the task
+        payload = my_task.internal_data.get(self.name)
+        if payload is not None:
+            my_task.set_data(**payload)
+
+    def get_correlations(self, script_engine, payload):
+        correlations = {}
+        for property in self.correlation_properties:
+            for key in property.correlation_keys:
+                if key not in correlations:
+                    correlations[key] = {}
+                correlations[key][property.name] = script_engine._evaluate(property.expression, payload)
+        return correlations
 
 
 class NoneEventDefinition(EventDefinition):
@@ -232,16 +247,25 @@ class NoneEventDefinition(EventDefinition):
     def __init__(self):
         self.internal, self.external = False, False
 
+    @property
+    def event_type(self):
+        return 'Default'
+
     def throw(self, my_task):
+        """It's a 'none' event, so nothing to throw."""
         pass
 
     def reset(self, my_task):
+        """It's a 'none' event, so nothing to reset."""
         pass
 
 
 class SignalEventDefinition(NamedEventDefinition):
     """The SignalEventDefinition is the implementation of event definition used for Signal Events."""
-    pass
+
+    @property
+    def spec_type(self):
+        return 'Signal'
 
 class TerminateEventDefinition(EventDefinition):
     """The TerminateEventDefinition is the implementation of event definition used for Termination Events."""
@@ -249,6 +273,10 @@ class TerminateEventDefinition(EventDefinition):
     def __init__(self):
         super(TerminateEventDefinition, self).__init__()
         self.external = False
+
+    @property
+    def event_type(self):
+        return 'Terminate'
 
 class TimerEventDefinition(EventDefinition):
     """
@@ -270,6 +298,10 @@ class TimerEventDefinition(EventDefinition):
         self.label = label
         self.dateTime = dateTime
 
+    @property
+    def event_type(self):
+        return 'Timer'
+
     def has_fired(self, my_task):
         """
         The Timer is considered to have fired if the evaluated dateTime
@@ -278,12 +310,11 @@ class TimerEventDefinition(EventDefinition):
         dt = my_task.workflow.script_engine.evaluate(my_task, self.dateTime)
         if isinstance(dt,datetime.timedelta):
             if my_task._get_internal_data('start_time',None) is not None:
-                start_time = datetime.datetime.strptime(my_task._get_internal_data('start_time',None),'%Y-%m-%d '
-                                                                                                   '%H:%M:%S.%f')
+                start_time = datetime.datetime.strptime(my_task._get_internal_data('start_time',None), self.TIME_FORMAT)
                 elapsed = datetime.datetime.now() - start_time
                 return elapsed > dt
             else:
-                my_task.internal_data['start_time'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+                my_task.internal_data['start_time'] = datetime.datetime.now().strftime(self.TIME_FORMAT)
                 return False
 
         if dt is None:
@@ -324,6 +355,10 @@ class CycleTimerEventDefinition(EventDefinition):
         # with a duration timer
         self.cycle_definition = cycle_definition
 
+    @property
+    def event_type(self):
+        return 'Cycle Timer'
+
     def has_fired(self, my_task):
         # We will fire this timer whenever a cycle completes
         # The task itself will manage counting how many times it fires
@@ -340,16 +375,11 @@ class CycleTimerEventDefinition(EventDefinition):
         now = datetime.datetime.now()
         if my_task._get_internal_data('start_time') is None:
             start_time = now
-            my_task.internal_data['start_time'] = now.strftime('%Y-%m-%d %H:%M:%S.%f')
+            my_task.internal_data['start_time'] = now.strftime(self.TIME_FORMAT)
         else:
-            start_time = datetime.datetime.strptime(
-                my_task._get_internal_data('start_time'),
-                '%Y-%m-%d %H:%M:%S.%f'
-            )
+            start_time = datetime.datetime.strptime(my_task._get_internal_data('start_time'),self.TIME_FORMAT)
 
-        if my_task.get_data('repeat_count') >= repeat:
-            return False
-        elif (now - start_time) < delta:
+        if my_task.get_data('repeat_count') >= repeat or (now - start_time) < delta:
             return False
         return True
 

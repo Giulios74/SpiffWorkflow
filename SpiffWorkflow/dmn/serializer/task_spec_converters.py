@@ -1,7 +1,7 @@
-from ...bpmn.serializer.bpmn_converters import BpmnDataConverter, BpmnTaskSpecConverter
+from ...bpmn.serializer.bpmn_converters import BpmnTaskSpecConverter
 
 from ..specs.BusinessRuleTask import BusinessRuleTask
-from ..specs.model import Decision, DecisionTable, Rule
+from ..specs.model import DecisionTable, Rule
 from ..specs.model import Input, InputEntry, Output, OutputEntry
 from ..engine.DMNEngine import DMNEngine
 
@@ -14,7 +14,7 @@ class BusinessRuleTaskConverter(BpmnTaskSpecConverter):
         dct = self.get_default_attributes(spec)
         dct.update(self.get_bpmn_attributes(spec))
         # We only ever use one decision table
-        dct['decision_table'] = self.decision_table_to_dict(spec.dmnEngine.decisionTable)
+        dct['decision_table'] = self.decision_table_to_dict(spec.dmnEngine.decision_table)
         return dct
 
     def decision_table_to_dict(self, table):

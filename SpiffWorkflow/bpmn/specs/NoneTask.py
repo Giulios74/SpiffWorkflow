@@ -16,17 +16,20 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
-from ...specs import Simple
+from ...specs.Simple import Simple
 
 from ...bpmn.specs.BpmnSpecMixin import BpmnSpecMixin
-
-from .UserTask import UserTask
 
 
 class NoneTask(Simple, BpmnSpecMixin):
 
     def is_engine_task(self):
         return False
+
+    @property
+    def spec_type(self):
+        return 'Task'
+
     @classmethod
     def deserialize(self, serializer, wf_spec, s_state):
         return serializer.deserialize_generic(wf_spec, s_state, NoneTask)

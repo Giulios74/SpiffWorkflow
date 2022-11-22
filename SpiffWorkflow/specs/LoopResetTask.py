@@ -18,9 +18,9 @@
 # 02110-1301  USA
 
 
-from .base import TaskSpec, LOG
+from .base import TaskSpec
 from ..task import TaskState
-from ..exceptions import WorkflowTaskExecException
+from SpiffWorkflow.exceptions import WorkflowTaskException
 
 
 class LoopResetTask(TaskSpec):
@@ -52,16 +52,14 @@ class LoopResetTask(TaskSpec):
 
             destination.reset_token(task.data, reset_data=False)
         except Exception as e:
-            LOG.error('Error Looping back to previous task; task=%r',
-                      self.destination_id, exc_info=True)
             # set state to WAITING (because it is definitely not COMPLETED)
             # and raise WorkflowException pointing to this task because
             # maybe upstream someone will be able to handle this situation
-            task._setstate(TaskState.WAITING, force=True)
-            if isinstance(e, WorkflowTaskExecException):
+            task._set_state(TaskState.WAITING)
+            if isinstance(e, WorkflowTaskException):
                 raise e
             else:
-                raise WorkflowTaskExecException(
+                raise WorkflowTaskException(
                     task, 'Error during loop back:' + str(e), e)
         super(LoopResetTask, self)._on_complete_hook(task)
 

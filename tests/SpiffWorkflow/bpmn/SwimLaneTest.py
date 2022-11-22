@@ -19,15 +19,15 @@ class SwimLaneTest(BpmnWorkflowTestCase):
         spec, subprocesses = self.load_workflow_spec('lanes.bpmn','lanes')
         self.workflow = BpmnWorkflow(spec, subprocesses)
 
+    def testBpmnParserKnowsLanesExist(self):
+        parser = self.get_parser('lanes.bpmn')
+        self.assertTrue(parser.get_process_parser('lanes').has_lanes())
+        parser = self.get_parser('random_fact.bpmn')
+        self.assertFalse(parser.get_process_parser('random_fact').has_lanes())
+
     def testRunThroughHappy(self):
 
         self.workflow.do_engine_steps()
-        nav_list = self.workflow.get_flat_nav_list()
-        self.assertNav(nav_list[1], description="Request Feature", lane="A")
-        self.assertNav(nav_list[2], description="Clarifying Questions?", lane="B")
-        self.assertNav(nav_list[5], description="Clarify Request", lane="A")
-        self.assertNav(nav_list[7], description="Implement Feature", lane="B")
-        self.assertNav(nav_list[8], description="Send to testing", lane="C")
 
         atasks = self.workflow.get_ready_user_tasks(lane="A")
         btasks = self.workflow.get_ready_user_tasks(lane="B")

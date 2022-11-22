@@ -3,13 +3,11 @@
 from builtins import object
 import sys
 import unittest
-import re
 import os
-import glob
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from SpiffWorkflow.specs import *
-from SpiffWorkflow import Task
+from SpiffWorkflow.specs.WorkflowSpec import WorkflowSpec
+from SpiffWorkflow.task import Task
 from SpiffWorkflow.serializer.prettyxml import XmlSerializer
 from tests.SpiffWorkflow.util import run_workflow
 

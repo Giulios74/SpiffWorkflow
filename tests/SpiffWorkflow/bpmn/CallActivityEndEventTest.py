@@ -1,15 +1,10 @@
 # -*- coding: utf-8 -*-
 
-
-
-import sys
-import os
 import unittest
 
 from SpiffWorkflow.bpmn.PythonScriptEngine import PythonScriptEngine
-from SpiffWorkflow.exceptions import WorkflowTaskExecException
+from SpiffWorkflow.bpmn.exceptions import WorkflowTaskExecException
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from tests.SpiffWorkflow.bpmn.BpmnWorkflowTestCase import BpmnWorkflowTestCase
 
@@ -64,8 +59,9 @@ class CallActivityTest(BpmnWorkflowTestCase):
 
     def test_call_acitivity_errors_include_task_trace(self):
         error_spec = self.subprocesses.get('ErroringBPMN')
+        error_spec, subprocesses = self.load_workflow_spec('call_activity_*.bpmn', 'ErroringBPMN')
         with self.assertRaises(WorkflowTaskExecException) as context:
-            self.workflow = BpmnWorkflow(error_spec, self.subprocesses)
+            self.workflow = BpmnWorkflow(error_spec, subprocesses)
             self.workflow.do_engine_steps()
         self.assertEquals(2, len(context.exception.task_trace))
         self.assertRegexpMatches(context.exception.task_trace[0], 'Create Data \(.*?call_activity_call_activity.bpmn\)')

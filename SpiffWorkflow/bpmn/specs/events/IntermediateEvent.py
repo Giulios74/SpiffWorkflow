@@ -20,15 +20,36 @@
 from .event_types import ThrowingEvent, CatchingEvent
 from .event_definitions import CycleTimerEventDefinition
 from ..BpmnSpecMixin import BpmnSpecMixin
-from ..SubWorkflowTask import SubWorkflowTask
 from ....specs.Simple import Simple
 from ....task import TaskState
 
+class SendTask(ThrowingEvent):
+
+    @property
+    def spec_type(self):
+        return 'Send Task'
+
+
+class ReceiveTask(CatchingEvent):
+
+    @property
+    def spec_type(self):
+        return 'Receive Task'
+
+
 class IntermediateCatchEvent(CatchingEvent):
-    pass
+
+    @property
+    def spec_type(self):
+        return f'{self.event_definition.event_type} Catching Event'
+
 
 class IntermediateThrowEvent(ThrowingEvent):
-    pass
+
+    @property
+    def spec_type(self):
+        return f'{self.event_definition.event_type} Throwing Event'
+
 
 class _BoundaryEventParent(Simple, BpmnSpecMixin):
     """This task is inserted before a task with boundary events."""
@@ -41,6 +62,10 @@ class _BoundaryEventParent(Simple, BpmnSpecMixin):
 
         super(_BoundaryEventParent, self).__init__(wf_spec, name)
         self.main_child_task_spec = main_child_task_spec
+
+    @property
+    def spec_type(self):
+        return 'Boundary Event Parent'
 
     def _on_ready_hook(self, my_task):
 
@@ -59,9 +84,7 @@ class _BoundaryEventParent(Simple, BpmnSpecMixin):
             for sibling in child_task.parent.children:
                 if sibling == child_task:
                     continue
-                if sibling.task_spec == self.main_child_task_spec:
-                    sibling.cancel()
-                elif not sibling._is_finished():
+                if sibling.task_spec == self.main_child_task_spec or not sibling._is_finished():
                     sibling.cancel()
             for t in child_task.workflow._get_waiting_tasks():
                 t.task_spec._update(t)
@@ -100,9 +123,15 @@ class BoundaryEvent(CatchingEvent):
         super(BoundaryEvent, self).__init__(wf_spec, name, event_definition, **kwargs)
         self.cancel_activity = cancel_activity
 
-    def catches(self, my_task, event_definition):
+    @property
+    def spec_type(self):
+        interrupting = 'Interrupting' if self.cancel_activity else 'Non-Interrupting'
+        return f'{interrupting} {self.event_definition.event_type} Event'
+
+
+    def catches(self, my_task, event_definition, correlations=None):
         # Boundary events should only be caught while waiting
-        return super(BoundaryEvent, self).catches(my_task, event_definition) and my_task.state == TaskState.WAITING
+        return super(BoundaryEvent, self).catches(my_task, event_definition, correlations) and my_task.state == TaskState.WAITING
 
     def catch(self, my_task, event_definition):
         super(BoundaryEvent, self).catch(my_task, event_definition)

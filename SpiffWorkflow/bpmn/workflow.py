@@ -16,12 +16,23 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
 
+from SpiffWorkflow.bpmn.specs.events.event_definitions import MessageEventDefinition
 from .PythonScriptEngine import PythonScriptEngine
 from .specs.events.event_types import CatchingEvent
-from .specs.events import MessageEventDefinition, SignalEventDefinition
-from ..task import TaskState
+from .specs.events.StartEvent import StartEvent
+from .specs.SubWorkflowTask import CallActivity
+from ..task import TaskState, Task
 from ..workflow import Workflow
 from ..exceptions import WorkflowException
+
+
+class BpmnMessage:
+
+    def __init__(self, correlations, name, payload):
+
+        self.correlations = correlations or {}
+        self.name = name
+        self.payload = payload
 
 
 class BpmnWorkflow(Workflow):
@@ -45,10 +56,13 @@ class BpmnWorkflow(Workflow):
         to provide read only access to a previously saved workflow.
         """
         self._busy_with_restore = False
+        # THIS IS THE LINE THAT LOGS
         super(BpmnWorkflow, self).__init__(top_level_spec, **kwargs)
         self.name = name or top_level_spec.name
         self.subprocess_specs = subprocess_specs or {}
         self.subprocesses = {}
+        self.bpmn_messages = []
+        self.correlations = {}
         self.__script_engine = script_engine or PythonScriptEngine()
         self.read_only = read_only
 
@@ -57,23 +71,14 @@ class BpmnWorkflow(Workflow):
         # The outermost script engine always takes precedence.
         # All call activities, sub-workflows and DMNs should use the
         # workflow engine of the outermost workflow.
-        outer_workflow = self.outer_workflow
-        script_engine = self.__script_engine
-
-        while outer_workflow:
-            script_engine = outer_workflow.__script_engine
-            if outer_workflow == outer_workflow.outer_workflow:
-                break
-            else:
-                outer_workflow = outer_workflow.outer_workflow
-        return script_engine
+        return self._get_outermost_workflow().__script_engine
 
     @script_engine.setter
     def script_engine(self, engine):
         self.__script_engine = engine
 
     def create_subprocess(self, my_task, spec_name, name):
-        
+
         workflow = self._get_outermost_workflow(my_task)
         subprocess = BpmnWorkflow(
             workflow.subprocess_specs[spec_name], name=name,
@@ -91,29 +96,24 @@ class BpmnWorkflow(Workflow):
         workflow = self._get_outermost_workflow(my_task)
         return workflow.subprocesses.get(my_task.id)
 
-    def _get_outermost_workflow(self, task=None):    
+    def add_subprocess(self, spec_name, name):
+
+        new = CallActivity(self.spec, name, spec_name)
+        self.spec.start.connect(new)
+        task = Task(self, new)
+        task._ready()
+        start = self.get_tasks_from_spec_name('Start', workflow=self)[0]
+        start.children.append(task)
+        task.parent = start
+        return self.subprocesses[task.id]
+
+    def _get_outermost_workflow(self, task=None):
         workflow = task.workflow if task is not None else self
         while workflow != workflow.outer_workflow:
             workflow = workflow.outer_workflow
         return workflow
 
-    def message(self, message, payload=None, result_var=None):
-        """
-        This method generates a message event definition with the supplied
-        information, taking the same arguments as the message method it
-        replaces.  It is included for backwards compatibility.
-        """
-        self.catch(MessageEventDefinition(message, payload, result_var))
-
-    def signal(self, name):
-        """
-        This method generates a signal event definition with the supplied
-        information, taking the same arguments as the signal method it
-        replaces.  It is included for backwards compatibility.
-        """
-        self.catch(SignalEventDefinition(name))
-
-    def catch(self, event_definition):
+    def catch(self, event_definition, correlations=None):
         """
         Send an event definition to any tasks that catch it.
 
@@ -127,14 +127,43 @@ class BpmnWorkflow(Workflow):
         :param event_definition: the thrown event
         """
         assert not self.read_only and not self._is_busy_with_restore()
+
+        # Start a subprocess for known specs with start events that catch this
+        # This is total hypocritical of me given how I've argued that specs should
+        # be immutable, but I see no other way of doing this.
+        for name, spec in self.subprocess_specs.items():
+            for task_spec in list(spec.task_specs.values()):
+                if isinstance(task_spec, StartEvent) and task_spec.event_definition == event_definition:
+                    subprocess = self.add_subprocess(spec.name, f'{spec.name}_{len(self.subprocesses)}')
+                    subprocess.correlations = correlations or {}
+                    start = self.get_tasks_from_spec_name(task_spec.name, workflow=subprocess)[0]
+                    task_spec.event_definition.catch(start, event_definition)
+
         # We need to get all the tasks that catch an event before completing any of them
         # in order to prevent the scenario where multiple boundary events catch the
         # same event and the first executed cancels the rest
-        tasks = [ t for t in self.get_catching_tasks() if t.task_spec.catches(t, event_definition) ]
+        tasks = [ t for t in self.get_catching_tasks() if t.task_spec.catches(t, event_definition, correlations or {}) ]
         for task in tasks:
             task.task_spec.catch(task, event_definition)
 
-    def do_engine_steps(self, exit_at = None):
+        # Figure out if we need to create an extenal message
+        if len(tasks) == 0 and isinstance(event_definition, MessageEventDefinition):
+            self.bpmn_messages.append(
+                BpmnMessage(correlations, event_definition.name, event_definition.payload))
+
+    def get_bpmn_messages(self):
+        messages = self.bpmn_messages
+        self.bpmn_messages = []
+        return messages
+
+    def catch_bpmn_message(self, name, payload, correlations=None):
+        event_definition = MessageEventDefinition(name)
+        event_definition.payload = payload
+        self.catch(event_definition, correlations=correlations)
+
+    def do_engine_steps(self, exit_at = None,
+        will_complete_task=None,
+        did_complete_task=None):
         """
         Execute any READY tasks that are engine specific (for example, gateways
         or script tasks). This is done in a loop, so it will keep completing
@@ -142,6 +171,8 @@ class BpmnWorkflow(Workflow):
         left.
 
         :param exit_at: After executing a task with a name matching this param return the task object
+        :param will_complete_task: Callback that will be called prior to completing a task
+        :param did_complete_task: Callback that will be called after completing a task
         """
         assert not self.read_only
         engine_steps = list(
@@ -149,21 +180,34 @@ class BpmnWorkflow(Workflow):
              if self._is_engine_task(t.task_spec)])
         while engine_steps:
             for task in engine_steps:
+                if will_complete_task is not None:
+                    will_complete_task(task)
                 task.complete()
+                if did_complete_task is not None:
+                    did_complete_task(task)
                 if task.task_spec.name == exit_at:
                     return task
             engine_steps = list(
                 [t for t in self.get_tasks(TaskState.READY)
                  if self._is_engine_task(t.task_spec)])
 
-    def refresh_waiting_tasks(self):
+    def refresh_waiting_tasks(self,
+        will_refresh_task=None,
+        did_refresh_task=None):
         """
         Refresh the state of all WAITING tasks. This will, for example, update
         Catching Timer Events whose waiting time has passed.
+
+        :param will_refresh_task: Callback that will be called prior to refreshing a task
+        :param did_refresh_task: Callback that will be called after refreshing a task
         """
         assert not self.read_only
         for my_task in self.get_tasks(TaskState.WAITING):
+            if will_refresh_task is not None:
+                will_refresh_task(my_task)
             my_task.task_spec._update(my_task)
+            if did_refresh_task is not None:
+                did_refresh_task(my_task)
 
     def get_tasks_from_spec_name(self, name, workflow=None):
         return [t for t in self.get_tasks(workflow=workflow) if t.task_spec.name == name]
@@ -186,7 +230,7 @@ class BpmnWorkflow(Workflow):
         for task in self.get_tasks():
             if task.id == task_id:
                 return task
-        raise WorkflowException(self.spec, 
+        raise WorkflowException(self.spec,
             f'A task with the given task_id ({task_id}) was not found')
 
     def complete_task_from_id(self, task_id):

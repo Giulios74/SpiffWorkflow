@@ -17,24 +17,21 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
 
-import logging
 import sys
 import traceback
 from .ValidationException import ValidationException
 from ..specs.NoneTask import NoneTask
 from ..specs.ScriptTask import ScriptTask
 from ..specs.UserTask import UserTask
-from ..specs.events import _BoundaryEventParent, CancelEventDefinition
+from ..specs.events.IntermediateEvent import _BoundaryEventParent
+from ..specs.events.event_definitions import CancelEventDefinition
 from ..specs.MultiInstanceTask import getDynamicMIClass
-from ..specs.SubWorkflowTask import CallActivity, TransactionSubprocess
+from ..specs.SubWorkflowTask import CallActivity, TransactionSubprocess, SubWorkflowTask
 from ..specs.ExclusiveGateway import ExclusiveGateway
 from ...dmn.specs.BusinessRuleTask import BusinessRuleTask
 from ...operators import Attrib, PathAttrib
 from .util import one, first
 from .node_parser import NodeParser
-from ...specs.SubWorkflow import SubWorkflow
-
-LOG = logging.getLogger(__name__)
 
 STANDARDLOOPCOUNT = '25'
 
@@ -50,7 +47,7 @@ class TaskParser(NodeParser):
     outgoing transitions, once the child tasks have all been parsed.
     """
 
-    def __init__(self, process_parser, spec_class, node, lane=None):
+    def __init__(self, process_parser, spec_class, node, nsmap=None, lane=None):
         """
         Constructor.
 
@@ -60,31 +57,31 @@ class TaskParser(NodeParser):
           extending the TaskParser.
         :param node: the XML node for this task
         """
-        super().__init__(node, process_parser.filename, process_parser.doc_xpath, lane)
+        super().__init__(node, nsmap, filename=process_parser.filename, lane=lane)
         self.process_parser = process_parser
         self.spec_class = spec_class
         self.spec = self.process_parser.spec
 
-    def _set_multiinstance_attributes(self, isSequential, expanded, loopcount,
-            loopTask=False, elementVar=None, collection=None, completioncondition=None):
+    def _set_multiinstance_attributes(self, is_sequential, expanded, loop_count,
+                                      loop_task=False, element_var=None, collection=None, completion_condition=None):
         # This should be replaced with its own task parser (though I'm not sure how feasible this is given
         # the current parser achitecture).  We should also consider separate classes for loop vs
         # multiinstance because having all these optional attributes is a nightmare
 
-        if not isinstance(self.task, (NoneTask,UserTask,BusinessRuleTask,ScriptTask,CallActivity,SubWorkflow)):
+        if not isinstance(self.task, (NoneTask, UserTask, BusinessRuleTask, ScriptTask, CallActivity, SubWorkflowTask)):
             raise ValidationException(
                 f'Unsupported MultiInstance Task: {self.task.__class__}',
                 node=self.node,
                 filename=self.filename)
 
-        self.task.loopTask = loopTask
-        self.task.isSequential = isSequential
+        self.task.loopTask = loop_task
+        self.task.isSequential = is_sequential
         self.task.expanded = expanded
         # make dot notation compatible with bmpmn path notation.
-        self.task.times = PathAttrib(loopcount.replace('.', '/')) if loopcount.find('.') > 0 else Attrib(loopcount)
-        self.task.elementVar = elementVar
+        self.task.times = PathAttrib(loop_count.replace('.', '/')) if loop_count.find('.') > 0 else Attrib(loop_count)
+        self.task.elementVar = element_var
         self.task.collection = collection
-        self.task.completioncondition = completioncondition
+        self.task.completioncondition = completion_condition
 
         self.task.prevtaskclass = self.task.__module__ + "." + self.task.__class__.__name__
         newtaskclass = getDynamicMIClass(self.get_id(),self.task.__class__)
@@ -92,23 +89,23 @@ class TaskParser(NodeParser):
 
     def _detect_multiinstance(self):
 
-        multiinstanceElement = first(self.xpath('./bpmn:multiInstanceLoopCharacteristics'))
-        if multiinstanceElement is not None:
-            isSequential = multiinstanceElement.get('isSequential') == 'true'
+        multiinstance_element = first(self.xpath('./bpmn:multiInstanceLoopCharacteristics'))
+        if multiinstance_element is not None:
+            is_sequential = multiinstance_element.get('isSequential') == 'true'
 
-            elementVarText = multiinstanceElement.attrib.get('{' + CAMUNDA_MODEL_NS + '}elementVariable')
-            collectionText = multiinstanceElement.attrib.get('{' + CAMUNDA_MODEL_NS + '}collection')
+            element_var_text = multiinstance_element.attrib.get('{' + CAMUNDA_MODEL_NS + '}elementVariable')
+            collection_text = multiinstance_element.attrib.get('{' + CAMUNDA_MODEL_NS + '}collection')
 
             loop_cardinality = first(self.xpath('./bpmn:multiInstanceLoopCharacteristics/bpmn:loopCardinality'))
             if loop_cardinality is not None:
-                loopcount = loop_cardinality.text
-            elif collectionText is not None:
-                loopcount = collectionText
+                loop_count = loop_cardinality.text
+            elif collection_text is not None:
+                loop_count = collection_text
             else:
-                loopcount = '1'
+                loop_count = '1'
 
-            if collectionText is not None:
-                collection = PathAttrib(collectionText.replace('.', '/')) if collectionText.find('.') > 0 else Attrib(collectionText)
+            if collection_text is not None:
+                collection = PathAttrib(collection_text.replace('.', '/')) if collection_text.find('.') > 0 else Attrib(collection_text)
             else:
                 collection = None
 
@@ -116,13 +113,13 @@ class TaskParser(NodeParser):
             if completion_condition is not None:
                 completion_condition = completion_condition.text
 
-            self._set_multiinstance_attributes(isSequential, 1, loopcount,
-                elementVar=elementVarText,
-                collection=collection,
-                completioncondition=completion_condition)
+            self._set_multiinstance_attributes(is_sequential, 1, loop_count,
+                                               element_var=element_var_text,
+                                               collection=collection,
+                                               completion_condition=completion_condition)
 
         elif len(self.xpath('./bpmn:standardLoopCharacteristics')) > 0:
-            self._set_multiinstance_attributes(True, 25, STANDARDLOOPCOUNT, loopTask=True)
+            self._set_multiinstance_attributes(True, 25, STANDARDLOOPCOUNT, loop_task=True)
 
     def parse_node(self):
         """
@@ -130,9 +127,14 @@ class TaskParser(NodeParser):
         """
         try:
             self.task = self.create_task()
-
+            # Why do we just set random attributes willy nilly everywhere in the code????
+            # And we still pass around a gigantic kwargs dict whenever we create anything!
             self.task.extensions = self.parse_extensions()
             self.task.documentation = self.parse_documentation()
+            # And now I have to add more of the same crappy thing.
+            self.task.data_input_associations = self.parse_incoming_data_references()
+            self.task.data_output_associations = self.parse_outgoing_data_references()
+
             self._detect_multiinstance()
 
             boundary_event_nodes = self.doc_xpath('.//bpmn:boundaryEvent[@attachedToRef="%s"]' % self.get_id())
@@ -207,7 +209,6 @@ class TaskParser(NodeParser):
             exc_info = sys.exc_info()
             tb = "".join(traceback.format_exception(
                 exc_info[0], exc_info[1], exc_info[2]))
-            LOG.error("%r\n%s", ex, tb)
             raise ValidationException("%r" % (ex), node=self.node, filename=self.filename)
 
     def get_task_spec_name(self, target_ref=None):

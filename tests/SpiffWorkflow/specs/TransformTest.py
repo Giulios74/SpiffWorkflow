@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
 from tests.SpiffWorkflow.util import run_workflow
 from .TaskSpecTest import TaskSpecTest
-from SpiffWorkflow.specs import Transform, Simple
+from SpiffWorkflow.specs.Transform import Transform
+from SpiffWorkflow.specs.Simple import Simple
 
 
 class TransformTest(TaskSpecTest):
@@ -26,7 +27,7 @@ class TransformTest(TaskSpecTest):
 
     def testPattern(self):
         """
-        Tests that we can create a task that executes an shell command
+        Tests that we can create a task that executes a shell command
         and that the workflow can be called to complete such tasks.
         """
         task1 = Transform(self.wf_spec, 'First', transforms=[

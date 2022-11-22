@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-from builtins import next
-from builtins import object
+
 # Copyright (C) 2007 Samuel Abels
 #
 # This library is free software; you can redistribute it and/or
@@ -17,17 +16,17 @@ from builtins import object
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
+
 import logging
-from . import specs
+
+from .specs.Simple import Simple
 from .specs.LoopResetTask import LoopResetTask
 from .task import Task, TaskState
 from .util.compat import mutex
 from .util.event import Event
 from .exceptions import WorkflowException
-from .bpmn.specs.events import _BoundaryEventParent
-LOG = logging.getLogger(__name__)
 
-
+logger = logging.getLogger('spiff')
 
 class Workflow(object):
 
@@ -50,7 +49,6 @@ class Workflow(object):
         """
         self.name = None
         assert workflow_spec is not None
-        LOG.debug("__init__ Workflow instance: %s" % self.__str__())
         self.spec = workflow_spec
         self.data = {}
         self.outer_workflow = kwargs.get('parent', self)
@@ -63,16 +61,17 @@ class Workflow(object):
             if 'Root' in workflow_spec.task_specs:
                 root = workflow_spec.task_specs['Root']
             else:
-                root = specs.Simple(workflow_spec, 'Root')
-        self.task_tree = Task(self, root)
+                root = Simple(workflow_spec, 'Root')
+            logger.info('Initialize', extra=self.log_info())
+
+        # Setting TaskState.COMPLETED prevents the root task from being executed.
+        self.task_tree = Task(self, root, state=TaskState.COMPLETED)
         self.success = True
         self.debug = False
 
         # Events.
         self.completed_event = Event()
 
-        # Prevent the root task from being executed.
-        self.task_tree.state = TaskState.COMPLETED
         start = self.task_tree._add_child(self.spec.start, state=TaskState.FUTURE)
 
         self.spec.start._predict(start)
@@ -80,7 +79,17 @@ class Workflow(object):
             start.task_spec._update(start)
 
         self.task_mapping = self._get_task_mapping()
-        # start.dump()
+
+    def log_info(self, dct=None):
+        extra = dct or {}
+        extra.update({
+            'workflow': self.spec.name,
+            'task_spec': '-',
+            'task_type': None,
+            'task_id': None,
+            'data': None,
+        })
+        return extra
 
     def is_completed(self):
         """
@@ -172,6 +181,7 @@ class Workflow(object):
             cancel.append(task)
         for task in cancel:
             task.cancel()
+        logger.info(f'Cancel with {len(cancel)} remaining', extra=self.log_info())
 
     def get_task_spec_from_name(self, name):
         """
@@ -227,18 +237,6 @@ class Workflow(object):
         self.refresh_waiting_tasks()
         self.do_engine_steps()
         self.task_tree.internal_data['cancels'] = {}
-
-    def get_flat_nav_list(self):
-        """Returns a navigation list with indentation hints, but the list
-        is completly flat, and a nav item has no children."""
-        from . import navigation
-        return navigation.get_flat_nav_list(self)
-
-    def get_deep_nav_list(self):
-        """Returns a nested navigation list, where indentation hints are
-        applied to recreate a deep structure."""
-        from . import navigation
-        return navigation.get_deep_nav_list(self)
 
     def get_tasks(self, state=TaskState.ANY_MASK):
         """

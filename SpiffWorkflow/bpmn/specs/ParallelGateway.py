@@ -16,10 +16,7 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
-import logging
 from .UnstructuredJoin import UnstructuredJoin
-
-LOG = logging.getLogger(__name__)
 
 
 class ParallelGateway(UnstructuredJoin):
@@ -49,6 +46,10 @@ class ParallelGateway(UnstructuredJoin):
         # If the threshold was reached, get ready to fire.
         return (force or len(completed_inputs) >= len(self.inputs),
                 waiting_tasks)
+
+    @property
+    def spec_type(self):
+        return 'Parallel Gateway'
 
     @classmethod
     def deserialize(self, serializer, wf_spec, s_state):

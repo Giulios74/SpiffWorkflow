@@ -1,20 +1,11 @@
 # -*- coding: utf-8 -*-
+import ast
 import copy
-import re
 import sys
 import traceback
-from builtins import object
-import ast
-import datetime
-from datetime import timedelta
-from decimal import Decimal
 
-import dateparser
-import pytz
-
-from ..exceptions import WorkflowTaskExecException
+from SpiffWorkflow.bpmn.exceptions import WorkflowTaskExecException
 from ..operators import Operator
-from ..workflow import WorkflowException
 
 
 # Copyright (C) 2020 Kelly McDonald
@@ -33,6 +24,8 @@ from ..workflow import WorkflowException
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 # 02110-1301  USA
+
+
 class Box(dict):
     """
     Example:
@@ -104,85 +97,16 @@ class PythonScriptEngine(object):
     expressions in a different way.
     """
 
-    def __init__(self, scriptingAdditions=None):
-        if scriptingAdditions is None:
-            scriptingAdditions = {}
-        self.globals = {'timedelta': timedelta,
-                        'datetime': datetime,
-                        'dateparser': dateparser,
-                        'pytz': pytz,
-                        'Box': Box,
-                        }
-        self.globals.update(scriptingAdditions)
+    def __init__(self, default_globals=None, scripting_additions=None):
 
-    def validate_expression(self, text):
-        if text is None:
-            return
-        try:
-            # this should work if we can just do a straight equality
-            ast.parse(text)
-            return text, True
-        except:
-            try:
-                revised_text = 's ' + text  # if we have problems parsing,
-                # then we introduce a variable on the left hand side and try
-                # that and see if that parses. If so, then we know that we do
-                # not need to introduce an equality operator later in the dmn
-                ast.parse(revised_text)
-                return revised_text[2:], False
-            except Exception as e:
-                raise Exception("error parsing expression " + str(text) + " " +
-                                str(e))
+        self.globals = default_globals or {}
+        self.globals.update(scripting_additions or {})
+        self.error_tasks = {}
 
-    def eval_dmn_expression(self, inputExpr, matchExpr, context, task=None):
-        """
-        Here we need to handle a few things such as if it is an equality or if
-        the equality has already been taken care of. For now, we just assume
-         it is equality.
+    def validate(self, expression):
+        ast.parse(expression)
 
-         An optional task can be included if this is being executed in the
-         context of a BPMN task.
-        """
-        if matchExpr is None:
-            return True
-
-        nolhs = False
-        # NB - the question mark allows us to do a double ended test - for
-        # example - our input expr is 5 and the match expr is 4 < ? < 6  -
-        # this should evaluate as 4  < 5 < 6 and it should evaluate as 'True'
-        # NOTE:  It should only do this replacement outside of quotes.
-        # for example, provided "This thing?"  in quotes, it should not
-        # do the replacement.
-        matchExpr = re.sub('(\?)(?=(?:[^\'"]|[\'"][^\'"]*[\'"])*$)',
-                           'dmninputexpr', matchExpr)
-        if 'dmninputexpr' in matchExpr:
-            nolhs = True
-
-        rhs, needsEquals = self.validate_expression(matchExpr)
-
-        external_methods = {
-            'datetime': datetime,
-            'timedelta': timedelta,
-            'Decimal': Decimal,
-            'Box': Box
-        }
-
-        lhs, lhsNeedsEquals = self.validate_expression(inputExpr)
-        if not lhsNeedsEquals:
-            raise WorkflowException(
-                "Input Expression '%s' is malformed" % inputExpr)
-        if nolhs:
-            dmninputexpr = self._evaluate(lhs, context, task, external_methods)
-            external_methods['dmninputexpr'] = dmninputexpr
-            return self._evaluate(rhs, context, task, external_methods)
-        if needsEquals:
-            expression = lhs + ' == ' + rhs
-        else:
-            expression = lhs + rhs
-
-        return self._evaluate(expression, context, task, external_methods)
-
-    def evaluate(self, task, expression):
+    def evaluate(self, task, expression, external_methods=None):
         """
         Evaluate the given expression, within the context of the given task and
         return the result.
@@ -193,92 +117,102 @@ class PythonScriptEngine(object):
                 # expression judging from the contents of operators.py
                 return expression._matches(task)
             else:
-                return self._evaluate(expression, task.data, task=task)
+                return self._evaluate(expression, task.data, external_methods)
         except Exception as e:
             raise WorkflowTaskExecException(task,
-                                            "Error evaluating expression "
-                                            "'%s', %s" % (expression, str(e)))
+                                            f"Error evaluating expression {expression}",
+                                            e)
 
-    def _evaluate(self, expression, context, task=None, external_methods=None):
-        """
-        Evaluate the given expression, within the context of the given task and
-        return the result.
-        """
-        if external_methods is None:
-            external_methods = {}
-
-        expression, valid = self.validate_expression(expression)
-        lcls = {}
-        if isinstance(context, dict):
-            lcls.update(context)
-
-        globals = copy.copy(self.globals)  # else we pollute all later evals.
-        for x in lcls.keys():
-            if isinstance(lcls[x], Box):
-                pass # Stunning performance improvement with this line.
-            elif isinstance(lcls[x], dict):
-                lcls[x] = Box(lcls[x])
-        globals.update(lcls)
-        globals.update(external_methods)
-        return eval(expression, globals, lcls)
-
-    def convertToBoxSub(self, data):
-        if isinstance(data, list):
-            for x in range(len(data)):
-                data[x] = self.convertToBoxSub(data[x])
-            return data
-        if isinstance(data, dict):
-            for x in data.keys():
-                if isinstance(data[x], dict):
-                    data[x] = self.convertToBoxSub(data[x])
-            return Box(data)
-        return data
-
-    def convertToBox(self, data):
-        for key in data.keys():
-            data[key] = self.convertToBoxSub(data[key])
-
-    def execute(self, task, script, data, external_methods=None):
+    def execute(self, task, script, external_methods=None):
         """
         Execute the script, within the context of the specified task
         """
-        if external_methods is None:
-            external_methods = {}
-        my_globals = copy.copy(self.globals)
-        self.check_for_overwrite(task, my_globals, external_methods, data)
-        self.convertToBox(data)
-        my_globals.update(data)
-        my_globals.update(external_methods)
         try:
-            exec(script, my_globals, data)
-        except WorkflowTaskExecException as wte:
-            raise wte  # Something lower down is already raising a detailed error
+            self.check_for_overwrite(task, external_methods or {})
+            self._execute(script, task.data, external_methods or {})
         except Exception as err:
-            detail = err.__class__.__name__
-            if len(err.args) > 0:
-                detail += ":" + err.args[0]
-            line_number = 0
-            error_line = ''
-            cl, exc, tb = sys.exc_info()
-            # Loop back through the stack trace to find the file called
-            # 'string' - which is the script we are executing, then use that
-            # to parse and pull out the offending line.
-            for frameSummary in traceback.extract_tb(tb):
-                if frameSummary.filename == '<string>':
-                    line_number = frameSummary.lineno
-                    error_line = script.splitlines()[line_number - 1]
-            raise WorkflowTaskExecException(task, detail, err, line_number,
-                                            error_line)
+            wte = self.create_task_exec_exception(task, script, err)
+            self.error_tasks[task.id] = wte
+            raise wte
 
-    def check_for_overwrite(self, task, my_globals, more_methods, data):
+    def call_service(self, operation_name, operation_params, task_data):
+        """Override to control how external services are called from service
+        tasks."""
+        raise NotImplementedError("To call external services override the script engine and implement `call_service`.")
+
+    def create_task_exec_exception(self, task, script, err):
+
+        if isinstance(err, WorkflowTaskExecException):
+            return err
+
+        detail = err.__class__.__name__
+        if len(err.args) > 0:
+            detail += ":" + err.args[0]
+        line_number = 0
+        error_line = ''
+        cl, exc, tb = sys.exc_info()
+        # Loop back through the stack trace to find the file called
+        # 'string' - which is the script we are executing, then use that
+        # to parse and pull out the offending line.
+        for frame_summary in traceback.extract_tb(tb):
+            if frame_summary.filename == '<string>':
+                line_number = frame_summary.lineno
+                error_line = script.splitlines()[line_number - 1]
+        return WorkflowTaskExecException(task, detail, err, line_number,
+                                         error_line)
+
+    def check_for_overwrite(self, task, external_methods):
         """It's possible that someone will define a variable with the
         same name as a pre-defined script, rending the script un-callable.
         This results in a nearly indecipherable error.  Better to fail
         fast with a sensible error message."""
-        func_overwrites = set(my_globals).intersection(data)
-        func_overwrites.update(set(more_methods).intersection(data))
+        func_overwrites = set(self.globals).intersection(task.data)
+        func_overwrites.update(set(external_methods).intersection(task.data))
         if len(func_overwrites) > 0:
             msg = f"You have task data that overwrites a predefined " \
                   f"function(s). Please change the following variable or " \
                   f"field name(s) to something else: {func_overwrites}"
             raise WorkflowTaskExecException(task, msg)
+
+    def convert_to_box(self, data):
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if not isinstance(value, Box):
+                    data[key] = self.convert_to_box(value)
+            return Box(data)
+        if isinstance(data, list):
+            for idx, value in enumerate(data):
+                data[idx] = self.convert_to_box(value)
+            return data
+        return data
+
+    def _evaluate(self, expression, context, external_methods=None):
+
+        globals = copy.copy(self.globals)  # else we pollute all later evals.
+        self.convert_to_box(context)
+        globals.update(external_methods or {})
+        globals.update(context)
+        return eval(expression, globals)
+
+    def _execute(self, script, context, external_methods=None):
+
+        my_globals = copy.copy(self.globals)
+        self.convert_to_box(context)
+        my_globals.update(external_methods or {})
+        context.update(my_globals)
+        try:
+            exec(script, context)
+        finally:
+            self.remove_globals_and_functions_from_context(context,
+                                                           external_methods)
+
+    def remove_globals_and_functions_from_context(self, context,
+                                                  external_methods=None):
+        """When executing a script, don't leave the globals, functions
+        and external methods in the context that we have modified."""
+        for k in list(context):
+            if k == "__builtins__" or \
+                    hasattr(context[k], '__call__') or \
+                    k in self.globals or \
+                    external_methods and k in external_methods:
+                context.pop(k)

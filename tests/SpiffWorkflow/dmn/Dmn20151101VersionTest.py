@@ -1,8 +1,6 @@
 import os
 import unittest
 
-from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
-
 from SpiffWorkflow.dmn.parser.BpmnDmnParser import BpmnDmnParser
 from tests.SpiffWorkflow.bpmn.BpmnWorkflowTestCase import BpmnWorkflowTestCase
 
@@ -14,7 +12,7 @@ class DmnVersionTest(BpmnWorkflowTestCase):
 
     def testLoad(self):
         dmn = os.path.join(os.path.dirname(__file__), 'data',
-                            'dmn_version_20191111_test.dmn')
+                            'dmn_version_20151101_test.dmn')
         self.assertIsNone(self.parser.add_dmn_file(dmn))
 
 

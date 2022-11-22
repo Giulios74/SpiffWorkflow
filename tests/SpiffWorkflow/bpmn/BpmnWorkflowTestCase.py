@@ -3,11 +3,11 @@
 import json
 import os
 import unittest
+from SpiffWorkflow.bpmn.parser.BpmnParser import BpmnValidator
 
-from SpiffWorkflow import NavItem
 from SpiffWorkflow.task import TaskState
 
-from SpiffWorkflow.bpmn.serializer import BpmnWorkflowSerializer
+from SpiffWorkflow.bpmn.serializer.workflow import BpmnWorkflowSerializer
 from .BpmnLoaderForTests import TestUserTaskConverter, TestBpmnParser
 
 __author__ = 'matth'
@@ -19,13 +19,30 @@ class BpmnWorkflowTestCase(unittest.TestCase):
 
     serializer = BpmnWorkflowSerializer(wf_spec_converter)
 
-    def load_workflow_spec(self, filename, process_name):
+    def get_parser(self, filename, validate=True):
+        f = os.path.join(os.path.dirname(__file__), 'data', filename)
+        validator = BpmnValidator() if validate else None
+        parser = TestBpmnParser(validator=validator)
+        parser.add_bpmn_files_by_glob(f)
+        return parser
+
+    def load_workflow_spec(self, filename, process_name, validate=True):
+        parser = self.get_parser(filename, validate)
+        top_level_spec = parser.get_spec(process_name)
+        subprocesses = parser.get_subprocess_specs(process_name)
+        return top_level_spec, subprocesses
+
+    def load_collaboration(self, filename, collaboration_name):
         f = os.path.join(os.path.dirname(__file__), 'data', filename)
         parser = TestBpmnParser()
         parser.add_bpmn_files_by_glob(f)
-        top_level_spec = parser.get_spec(process_name)
-        subprocesses = parser.get_process_specs()
-        return top_level_spec, subprocesses
+        return parser.get_collaboration(collaboration_name)
+
+    def get_all_specs(self, filename):
+        f = os.path.join(os.path.dirname(__file__), 'data', filename)
+        parser = TestBpmnParser()
+        parser.add_bpmn_files_by_glob(f)
+        return parser.find_all_specs()
 
     def do_next_exclusive_step(self, step_name, with_save_load=False, set_attribs=None, choice=None):
         if with_save_load:
@@ -126,21 +143,3 @@ class BpmnWorkflowTestCase(unittest.TestCase):
             self.workflow.do_engine_steps()
             self.workflow.refresh_waiting_tasks()
         return self.serializer.workflow_to_dict(self.workflow)
-
-    def assertNav(self, nav_item: NavItem, name=None, description=None,
-                  spec_type=None, indent=None, state=None, lane=None,
-                  backtrack_to=None):
-        if name:
-            self.assertEqual(name, nav_item.name)
-        if description:
-            self.assertEqual(description, nav_item.description)
-        if spec_type:
-            self.assertEqual(spec_type, nav_item.spec_type)
-        if indent:
-            self.assertEqual(indent, nav_item.indent)
-        if state:
-            self.assertEqual(state, nav_item.state)
-        if lane:
-            self.assertEqual(lane, nav_item.lane)
-        if backtrack_to:
-            self.assertEqual(backtrack_to, nav_item.backtrack_to)

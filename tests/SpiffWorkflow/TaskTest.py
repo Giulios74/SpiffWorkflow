@@ -1,22 +1,19 @@
 # -*- coding: utf-8 -*-
 
-
-
-from builtins import object
 import sys
 import unittest
 import re
 import os.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from SpiffWorkflow import Task, TaskState
-from SpiffWorkflow.task import updateDotDict
-from SpiffWorkflow.specs import WorkflowSpec, Simple
-from SpiffWorkflow.exceptions import WorkflowException
+from SpiffWorkflow.task import Task, TaskState, updateDotDict
+from SpiffWorkflow.specs.WorkflowSpec import WorkflowSpec
+from SpiffWorkflow.specs.Simple import Simple
 
 
 class MockWorkflow(object):
-    pass
+    def __init__(self, spec):
+        self.spec = spec
 
 class UpdateDotDictTest(unittest.TestCase):
     def test_update(self):
@@ -31,8 +28,8 @@ class TaskTest(unittest.TestCase):
 
     def testTree(self):
         # Build a tree.
-        spec = WorkflowSpec()
-        workflow = MockWorkflow()
+        spec = WorkflowSpec(name='Mock Workflow')
+        workflow = MockWorkflow(spec)
         task1 = Simple(spec, 'Simple 1')
         task2 = Simple(spec, 'Simple 2')
         task3 = Simple(spec, 'Simple 3')

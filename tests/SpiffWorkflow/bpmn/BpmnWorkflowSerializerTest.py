@@ -1,11 +1,12 @@
 import os
 import unittest
 import json
+from uuid import uuid4
 
 from SpiffWorkflow.task import TaskState
 from SpiffWorkflow.bpmn.PythonScriptEngine import PythonScriptEngine
 from SpiffWorkflow.bpmn.parser.BpmnParser import BpmnParser
-from SpiffWorkflow.bpmn.serializer import BpmnWorkflowSerializer
+from SpiffWorkflow.bpmn.serializer.workflow import BpmnWorkflowSerializer
 from SpiffWorkflow.bpmn.serializer.BpmnSerializer import BpmnSerializer
 from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from tests.SpiffWorkflow.bpmn.BpmnLoaderForTests import TestUserTaskConverter
@@ -20,7 +21,7 @@ class BpmnWorkflowSerializerTest(unittest.TestCase):
         parser = BpmnParser()
         parser.add_bpmn_files_by_glob(f)
         top_level_spec = parser.get_spec(process_name)
-        subprocesses = parser.get_process_specs()
+        subprocesses = parser.get_subprocess_specs(process_name)
         return top_level_spec, subprocesses
 
     def setUp(self):
@@ -29,10 +30,6 @@ class BpmnWorkflowSerializerTest(unittest.TestCase):
         self.serializer = BpmnWorkflowSerializer(wf_spec_converter, version=self.SERIALIZER_VERSION)
         spec, subprocesses = self.load_workflow_spec('random_fact.bpmn', 'random_fact')
         self.workflow = BpmnWorkflow(spec, subprocesses)
-
-    def testDeserializeWorkflowSpec(self):
-        """Tested as a part of deserialize workflow."""
-        pass
 
     def testSerializeWorkflowSpec(self):
         spec_serialized = self.serializer.serialize_json(self.workflow)
@@ -62,12 +59,57 @@ class BpmnWorkflowSerializerTest(unittest.TestCase):
         serialized = self.serializer.serialize_json(self.workflow)
         json.loads(serialized)
 
+    def testSerializeWorkflowCustomJSONEncoderDecoder(self):
+        class MyCls:
+            a = 1
+            def to_dict(self):
+                return {'a': 1, 'my_type': 'mycls'}
+
+            @classmethod
+            def from_dict(self, data):
+                return MyCls()
+
+        class MyJsonEncoder(json.JSONEncoder):
+            def default(self, z):
+                if isinstance(z, MyCls):
+                    return z.to_dict()
+                return super().default(z)
+
+        class MyJsonDecoder(json.JSONDecoder):
+            classes = {'mycls': MyCls}
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(object_hook=self.object_hook, *args, **kwargs)
+
+            def object_hook(self, z):
+                if 'my_type' in z and z['my_type'] in self.classes:
+                    return self.classes[z['my_type']].from_dict(z)
+
+                return z
+
+        unserializable = MyCls()
+
+        a_task_spec = self.workflow.spec.task_specs[list(self.workflow.spec.task_specs)[0]]
+        a_task = self.workflow.get_tasks_from_spec_name(a_task_spec.name)[0]
+        a_task.data['jsonTest'] = unserializable
+
+        try:
+            self.assertRaises(TypeError, self.serializer.serialize_json, self.workflow)
+            wf_spec_converter = BpmnWorkflowSerializer.configure_workflow_spec_converter([TestUserTaskConverter])
+            custom_serializer = BpmnWorkflowSerializer(wf_spec_converter, version=self.SERIALIZER_VERSION,json_encoder_cls=MyJsonEncoder, json_decoder_cls=MyJsonDecoder)
+            serialized_workflow = custom_serializer.serialize_json(self.workflow)
+        finally:
+            a_task.data.pop('jsonTest',None)
+
+        serialized_task = [x for x in json.loads(serialized_workflow)['tasks'].values() if x['task_spec'] == a_task_spec.name][0]
+        self.assertEqual(serialized_task['data']['jsonTest'], {'a': 1, 'my_type': 'mycls'})
+
+        deserialized_workflow = custom_serializer.deserialize_json(serialized_workflow)
+        deserialized_task = deserialized_workflow.get_tasks_from_spec_name(a_task_spec.name)[0]
+        self.assertTrue(isinstance(deserialized_task.data['jsonTest'], MyCls))
+
     def testDeserializeWorkflow(self):
         self._compare_with_deserialized_copy(self.workflow)
-
-    def testDeserializeCallActivityChildren(self):
-        """Tested as a part of deserialize workflow."""
-        pass
 
     def testSerializeTask(self):
         self.serializer.serialize_json(self.workflow)
@@ -110,6 +152,16 @@ class BpmnWorkflowSerializerTest(unittest.TestCase):
         user_task.data = {"test":"my_test"}
         self._compare_with_deserialized_copy(self.workflow)
 
+    def testSerializeIgnoresCallable(self):
+        self.workflow.do_engine_steps()
+        user_task = self.workflow.get_ready_user_tasks()[0]
+        def f(n):
+            return n + 1
+        user_task.data = { 'f': f }
+        task_id = str(user_task.id)
+        dct = self.serializer.workflow_to_dict(self.workflow)
+        self.assertNotIn('f', dct['tasks'][task_id]['data'])
+
     def testLastTaskIsSetAndWorksThroughRestore(self):
         self.workflow.do_engine_steps()
         json = self.serializer.serialize_json(self.workflow)
@@ -128,6 +180,17 @@ class BpmnWorkflowSerializerTest(unittest.TestCase):
         ready_tasks[0].complete()
         wf.do_engine_steps()
         self.assertEqual(True, wf.is_completed())
+
+    def test_serialize_workflow_where_script_task_includes_function(self):
+        self.workflow.do_engine_steps()
+        ready_tasks = self.workflow.get_ready_user_tasks()
+        ready_tasks[0].complete()
+        self.workflow.do_engine_steps()
+        results = self.serializer.serialize_json(self.workflow)
+        assert self.workflow.is_completed()
+        assert 'y' in self.workflow.last_task.data
+        assert 'x' not in self.workflow.last_task.data
+        assert 'some_fun' not in self.workflow.last_task.data
 
     def _compare_with_deserialized_copy(self, wf):
         json = self.serializer.serialize_json(wf)

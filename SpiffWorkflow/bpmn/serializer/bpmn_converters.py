@@ -3,13 +3,15 @@ from functools import partial
 from uuid import UUID
 from datetime import datetime, timedelta
 
+from SpiffWorkflow.bpmn.specs.BpmnProcessSpec import BpmnDataSpecification
+
 from .dictionary import DictionaryConverter
 
-from ..specs.events import SignalEventDefinition, MessageEventDefinition, NoneEventDefinition
-from ..specs.events import TimerEventDefinition, CycleTimerEventDefinition, TerminateEventDefinition
-from ..specs.events import ErrorEventDefinition, EscalationEventDefinition, CancelEventDefinition
+from ..specs.events.event_definitions import SignalEventDefinition, MessageEventDefinition, NoneEventDefinition
+from ..specs.events.event_definitions import TimerEventDefinition, CycleTimerEventDefinition, TerminateEventDefinition
+from ..specs.events.event_definitions import ErrorEventDefinition, EscalationEventDefinition, CancelEventDefinition
+from ..specs.events.event_definitions import CorrelationProperty, NamedEventDefinition
 from ..specs.events import ConditionalEventDefinition
-from ..specs.events.event_definitions import NamedEventDefinition
 
 from ..specs.BpmnSpecMixin import BpmnSpecMixin, SequenceFlow
 from ...operators import Attrib, PathAttrib
@@ -30,6 +32,30 @@ class BpmnDataConverter(DictionaryConverter):
         self.register(UUID, lambda v: { 'value': str(v) }, lambda v: UUID(v['value']))
         self.register(datetime, lambda v:  { 'value': v.isoformat() }, lambda v: datetime.fromisoformat(v['value']))
         self.register(timedelta, lambda v: { 'days': v.days, 'seconds': v.seconds }, lambda v: timedelta(**v))
+
+    def convert(self, obj):
+        self.clean(obj)
+        return super().convert(obj)
+
+    def clean(self, obj):
+        # This removes functions and other callables from task data.
+        # By default we don't want to serialize these
+        if isinstance(obj, dict):
+            items = [ (k, v) for k, v in obj.items() ]
+            for key, value in items:
+                if callable(value):
+                    del obj[key]
+
+class BpmnDataSpecificationConverter:
+
+    @staticmethod
+    def to_dict(data_spec):
+        return { 'name': data_spec.name, 'description': data_spec.description }
+
+    @staticmethod
+    def from_dict(dct):
+        return BpmnDataSpecification(**dct)
+
 
 
 class BpmnTaskSpecConverter(DictionaryConverter):
@@ -78,6 +104,7 @@ class BpmnTaskSpecConverter(DictionaryConverter):
         self.register(SequenceFlow, self.sequence_flow_to_dict, self.sequence_flow_from_dict)
         self.register(Attrib, self.attrib_to_dict, partial(self.attrib_from_dict, Attrib))
         self.register(PathAttrib, self.attrib_to_dict, partial(self.attrib_from_dict, PathAttrib))
+        self.register(BpmnDataSpecification, BpmnDataSpecificationConverter.to_dict, BpmnDataSpecificationConverter.from_dict)
 
     def to_dict(self, spec):
         """
@@ -139,7 +166,9 @@ class BpmnTaskSpecConverter(DictionaryConverter):
             ),
             'outgoing_sequence_flows_by_id': dict(
                 (k, self.convert(v)) for k, v in spec.outgoing_sequence_flows_by_id.items()
-            )
+            ),
+            'data_input_associations': [ self.convert(obj) for obj in spec.data_input_associations ],
+            'data_output_associations': [ self.convert(obj) for obj in spec.data_output_associations ],
         }
 
     def get_join_attributes(self, spec):
@@ -198,6 +227,8 @@ class BpmnTaskSpecConverter(DictionaryConverter):
             spec.loopTask = dct.pop('loopTask', False)
             spec.outgoing_sequence_flows = self.restore(dct.pop('outgoing_sequence_flows', {}))
             spec.outgoing_sequence_flows_by_id = self.restore(dct.pop('outgoing_sequence_flows_by_id', {}))
+            spec.data_input_associations = self.restore(dct.pop('data_input_associations', []))
+            spec.data_output_associations = self.restore(dct.pop('data_output_associations', []))
 
         return spec
 
@@ -216,8 +247,7 @@ class BpmnTaskSpecConverter(DictionaryConverter):
         if isinstance(event_definition, NamedEventDefinition):
             dct['name'] = event_definition.name
         if isinstance(event_definition, MessageEventDefinition):
-            dct['payload'] = event_definition.payload
-            dct['result_var'] = event_definition.result_var
+            dct['correlation_properties'] = [prop.__dict__ for prop in event_definition.correlation_properties]
         if isinstance(event_definition, TimerEventDefinition):
             dct['label'] = event_definition.label
             dct['dateTime'] = event_definition.dateTime
@@ -245,6 +275,8 @@ class BpmnTaskSpecConverter(DictionaryConverter):
             an `EventDefinition` object
         """
         internal, external = dct.pop('internal'), dct.pop('external')
+        if 'correlation_properties' in dct:
+            dct['correlation_properties'] = [CorrelationProperty(**prop) for prop in dct['correlation_properties']]
         event_definition = definition_class(**dct)
         event_definition.internal = internal
         event_definition.external = external
@@ -300,6 +332,7 @@ class BpmnWorkflowSpecConverter(DictionaryConverter):
         self.register(spec_class, self.to_dict, self.from_dict)
         for converter in task_spec_converters:
             self.register(converter.spec_class, converter.to_dict, converter.from_dict, converter.typename)
+        self.register(BpmnDataSpecification, BpmnDataSpecificationConverter.to_dict, BpmnDataSpecificationConverter.from_dict)
 
     def to_dict(self, spec):
         """
